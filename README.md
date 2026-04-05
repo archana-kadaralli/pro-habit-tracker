@@ -50,13 +50,9 @@ A web-based Habit Tracker application that helps users build consistency by trac
 - Mobile responsiveness improvements
 
 ## 📸 Screenshots
+![Main UI](ss1.png)
+![Habit](ss2.png)
 
-### 🖥️ Main UI
-(ss1.png)
-
-
-### 📊 Habit Added
-(ss2.png)
 
 ---
 
