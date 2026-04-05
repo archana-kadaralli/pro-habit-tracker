@@ -52,13 +52,14 @@ A web-based Habit Tracker application that helps users build consistency by trac
 ## 📸 Screenshots
 
 ### 🖥️ Main UI
-![Main UI](Screenshot 2026-04-05 141020.png)
+Screenshot 2026-04-05 141020.png
 
 ### 📊 Habit Added
-![Habit](Screenshot 2026-04-05 141041.png)
+Screenshot 2026-04-05 141041.png
 
 ---
 
 ## 👩‍💻 Author
 
-Archana
+Archana Kadaralli
+
