@@ -52,10 +52,11 @@ A web-based Habit Tracker application that helps users build consistency by trac
 ## 📸 Screenshots
 
 ### 🖥️ Main UI
-Screenshot 2026-04-05 141020.png
+(ss1.png)
+
 
 ### 📊 Habit Added
-Screenshot 2026-04-05 141041.png
+(ss2.png)
 
 ---
 
