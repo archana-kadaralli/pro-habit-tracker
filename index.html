@@ -1,22 +1,272 @@
 <!DOCTYPE html>
-<html>
+<html lang="en" data-theme="light">
 <head>
-  <title>Habit Tracker</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pro Habit Tracker — Personal Productivity Dashboard</title>
+  <meta name="description" content="Track habits, build streaks, and visualise your consistency.">
   <link rel="stylesheet" href="style.css">
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◉</text></svg>">
 </head>
-
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
 
-  <h1>🔥 Habit Tracker</h1>
+  <!-- ============ AUTH VIEW ============ -->
+  <div id="authView" class="auth-wrap" hidden>
+    <div class="auth-card" role="dialog" aria-labelledby="authTitle">
+      <div class="auth-brand"><span class="brand-dot" aria-hidden="true"></span> Pro Habit Tracker</div>
+      <h1 id="authTitle">Build consistency, one day at a time.</h1>
+      <p class="muted">Sign in to sync your habits securely across devices. Each account keeps its own private data.</p>
+      <div class="auth-tabs" role="tablist">
+        <button id="tabLogin" class="auth-tab active" role="tab" aria-selected="true">Log in</button>
+        <button id="tabSignup" class="auth-tab" role="tab" aria-selected="false">Sign up</button>
+      </div>
+      <form id="authForm" novalidate>
+        <label for="authEmail">Email</label>
+        <input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com" required>
+        <label for="authPassword">Password</label>
+        <input id="authPassword" type="password" autocomplete="current-password" placeholder="Minimum 6 characters" required minlength="6">
+        <p id="authError" class="field-error" role="alert" hidden></p>
+        <button id="authSubmit" type="submit" class="btn primary block">Log in</button>
+      </form>
+      <div class="divider"><span>or</span></div>
+      <button id="googleBtn" class="btn ghost block">Continue with Google</button>
+      <p class="muted small">Demo project: data is stored per-user in Cloud Firestore under <code>users/{uid}/habits</code>.</p>
+    </div>
+  </div>
 
-  <input type="text" id="habitInput" placeholder="Enter habit">
-  <button id="addBtn">Add Habit</button>
+  <!-- ============ APP SHELL ============ -->
+  <div id="appShell" class="shell" hidden>
+    <aside class="sidebar" aria-label="Primary">
+      <div class="brand"><span class="brand-dot" aria-hidden="true"></span><span>Pro Habit Tracker</span></div>
+      <nav class="nav" id="mainNav">
+        <button class="nav-item active" data-nav="dashboard" aria-current="page"><span aria-hidden="true">◈</span> Dashboard</button>
+        <button class="nav-item" data-nav="habits"><span aria-hidden="true">☰</span> Habits</button>
+        <button class="nav-item" data-nav="calendar"><span aria-hidden="true">▦</span> Calendar</button>
+        <button class="nav-item" data-nav="analytics"><span aria-hidden="true">▤</span> Analytics</button>
+        <button class="nav-item" data-nav="achievements"><span aria-hidden="true">✦</span> Achievements</button>
+        <button class="nav-item" data-nav="settings"><span aria-hidden="true">⚙</span> Settings</button>
+      </nav>
+      <div class="side-foot">
+        <div class="level-mini" id="levelMini" title="Your level"></div>
+        <div class="user-chip">
+          <span id="userEmail" class="user-email">—</span>
+          <button id="logoutBtn" class="btn small ghost">Log out</button>
+        </div>
+        <button id="themeToggleSide" class="btn small ghost" aria-pressed="false">Dark mode</button>
+      </div>
+    </aside>
 
-  <div id="habitList"></div>
+    <div class="main-col">
+      <header class="topbar">
+        <button id="menuBtn" class="icon-btn" aria-label="Open navigation" aria-expanded="false">☰</button>
+        <div class="topbar-title" id="topbarTitle">Dashboard</div>
+        <div class="topbar-actions">
+          <button id="themeToggle" class="btn small ghost" aria-pressed="false">Dark mode</button>
+          <button id="addHabitTopBtn" class="btn primary small">+ New habit</button>
+        </div>
+      </header>
 
-  <!-- ✅ ONLY THIS SCRIPT -->
+      <main id="main" class="content" tabindex="-1">
+        <div id="globalError" class="banner error" role="alert" hidden></div>
+        <div id="loadingBar" class="loading" hidden><div class="spinner" aria-hidden="true"></div><span>Loading your habits…</span></div>
+
+        <!-- DASHBOARD -->
+        <section id="view-dashboard" class="view active" aria-label="Dashboard">
+          <div class="greeting-row">
+            <div>
+              <h2 id="greeting">Good morning</h2>
+              <p class="muted" id="dateLine">—</p>
+            </div>
+            <button class="btn primary" id="addHabitBtn">+ New habit</button>
+          </div>
+          <div class="grid stats-grid" id="statCards"></div>
+          <div class="grid two-col">
+            <div class="card">
+              <div class="card-head"><h3>Today's habits</h3><span id="todayCount" class="pill">0/0</span></div>
+              <div class="progress"><div id="todayProgress" class="progress-fill" style="width:0%"></div></div>
+              <div id="todayList" class="habit-list"></div>
+            </div>
+            <div class="stack">
+              <div class="card">
+                <div class="card-head"><h3>This week</h3></div>
+                <div id="weekStrip" class="week-strip"></div>
+              </div>
+              <div class="card">
+                <div class="card-head"><h3>Insights</h3></div>
+                <ul id="insightsList" class="insights"></ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- HABITS -->
+        <section id="view-habits" class="view" aria-label="Habits">
+          <div class="toolbar card">
+            <div class="toolbar-row">
+              <div class="search-wrap">
+                <label class="sr-only" for="searchInput">Search habits</label>
+                <input id="searchInput" type="search" placeholder="Search habits…">
+              </div>
+              <label>Category
+                <select id="filterCategory">
+                  <option value="">All categories</option>
+                  <option>Health</option><option>Fitness</option><option>Learning</option>
+                  <option>Productivity</option><option>Personal</option><option>Other</option>
+                </select>
+              </label>
+              <label>Status
+                <select id="filterStatus">
+                  <option value="all">All</option>
+                  <option value="todo">Not done today</option>
+                  <option value="done">Done today</option>
+                </select>
+              </label>
+              <label>Sort by
+                <select id="sortBy">
+                  <option value="newest">Recently created</option>
+                  <option value="name">Name</option>
+                  <option value="streak">Current streak</option>
+                  <option value="rate">Completion rate</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div id="allHabits" class="habit-grid"></div>
+        </section>
+
+        <!-- CALENDAR -->
+        <section id="view-calendar" class="view" aria-label="Calendar">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <h3>Activity heatmap</h3>
+                <p class="muted small">Completions per day across all habits. Select a habit to focus, or click a day for details.</p>
+              </div>
+              <label>Habit
+                <select id="heatmapHabit"><option value="__all">All habits</option></select>
+              </label>
+            </div>
+            <div id="heatmap" class="heatmap" role="grid" aria-label="Completion heatmap"></div>
+            <div class="heatmap-legend"><span>Less</span><span class="sw" data-l="0"></span><span class="sw" data-l="1"></span><span class="sw" data-l="2"></span><span class="sw" data-l="3"></span><span class="sw" data-l="4"></span><span>More</span></div>
+            <div id="dayDetail" class="day-detail"><p class="muted">Click a day to see its activity.</p></div>
+          </div>
+        </section>
+
+        <!-- ANALYTICS -->
+        <section id="view-analytics" class="view" aria-label="Analytics">
+          <div class="grid stats-grid" id="analyticsStats"></div>
+          <div class="grid two-col">
+            <div class="card"><div class="card-head"><h3>Last 7 days</h3></div><div id="chartWeek" class="bars"></div></div>
+            <div class="card"><div class="card-head"><h3>Last 30 days trend</h3></div><div id="chartMonth" class="bars"></div></div>
+          </div>
+          <div class="grid two-col">
+            <div class="card"><div class="card-head"><h3>Consistency by habit</h3></div><div id="chartHabits" class="hbars"></div></div>
+            <div class="card"><div class="card-head"><h3>Category performance</h3></div><div id="chartCategories" class="hbars"></div></div>
+          </div>
+        </section>
+
+        <!-- ACHIEVEMENTS -->
+        <section id="view-achievements" class="view" aria-label="Achievements">
+          <div class="card">
+            <div class="card-head"><div><h3>Gamification</h3><p class="muted small">Earned from your real completion history.</p></div></div>
+            <div class="xp-row">
+              <div class="xp-level" id="xpLevel">Level 1</div>
+              <div class="progress big"><div id="xpFill" class="progress-fill" style="width:0%"></div></div>
+              <div class="muted small" id="xpText">0 XP</div>
+            </div>
+          </div>
+          <div id="badges" class="badge-grid"></div>
+        </section>
+
+        <!-- SETTINGS -->
+        <section id="view-settings" class="view" aria-label="Settings">
+          <div class="grid two-col">
+            <div class="card">
+              <h3>Appearance</h3>
+              <div class="row">
+                <label for="themeSelect">Theme</label>
+                <select id="themeSelect"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+              </div>
+              <p class="muted small">Preference is saved on this device.</p>
+            </div>
+            <div class="card">
+              <h3>Reminders</h3>
+              <p class="muted small" id="notifStatus">Browser notifications: unknown.</p>
+              <div class="row"><label for="reminderTime">Daily reminder time</label><input id="reminderTime" type="time" value="20:00"></div>
+              <label class="check"><input id="reminderEnabled" type="checkbox"> Enable daily reminder for incomplete habits</label>
+              <button id="testNotifBtn" class="btn ghost small">Send test notification</button>
+              <p class="muted small">If notifications are blocked, the app falls back to an in-app toast at the reminder time.</p>
+            </div>
+          </div>
+          <div class="card danger-zone">
+            <h3>Account</h3>
+            <p class="muted">Signed in as <strong id="settingsEmail">—</strong></p>
+            <p class="muted small">Data path: <code id="dataPath">users/{uid}/habits</code></p>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Habit form modal -->
+  <div id="habitModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="habitModalTitle">
+      <h3 id="habitModalTitle">New habit</h3>
+      <form id="habitForm" novalidate>
+        <input type="hidden" id="habitId">
+        <label for="fName">Habit name *</label>
+        <input id="fName" maxlength="60" required placeholder="e.g. Read 20 pages">
+        <label for="fDesc">Description (optional)</label>
+        <textarea id="fDesc" rows="2" maxlength="240" placeholder="Why does this matter?"></textarea>
+        <div class="form-grid">
+          <div><label for="fCategory">Category</label>
+            <select id="fCategory"><option>Health</option><option>Fitness</option><option>Learning</option><option>Productivity</option><option>Personal</option><option>Other</option></select></div>
+          <div><label for="fIcon">Icon</label>
+            <select id="fIcon"><option value="◉">◉ Default</option><option value="♥">♥ Health</option><option value="▲">▲ Fitness</option><option value="✎">✎ Learning</option><option value="✔">✔ Productivity</option><option value="★">★ Personal</option><option value="●">● Other</option></select></div>
+        </div>
+        <div class="form-grid">
+          <div><label>Color</label><div class="swatches" id="colorSwatches" role="radiogroup" aria-label="Habit color"></div></div>
+          <div><label for="fFreq">Frequency</label>
+            <select id="fFreq"><option value="daily">Every day</option><option value="weekdays">Weekdays (Mon–Fri)</option><option value="custom">Specific weekdays</option></select></div>
+        </div>
+        <fieldset id="customDays" hidden><legend>Active days</legend><div class="days" id="daysRow"></div></fieldset>
+        <p id="formError" class="field-error" role="alert" hidden></p>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" id="cancelHabitBtn">Cancel</button>
+          <button type="submit" class="btn primary" id="saveHabitBtn">Save habit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Detail modal -->
+  <div id="detailModal" class="modal" hidden>
+    <div class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <div class="card-head"><h3 id="detailTitle">Habit</h3><button class="icon-btn" id="closeDetailBtn" aria-label="Close details">✕</button></div>
+      <div id="detailBody"></div>
+      <div class="modal-actions">
+        <button class="btn ghost danger" id="detailDeleteBtn">Delete</button>
+        <button class="btn ghost" id="detailEditBtn">Edit</button>
+        <button class="btn primary" id="detailToggleBtn">Mark today done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm modal -->
+  <div id="confirmModal" class="modal" hidden>
+    <div class="modal-card small" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <h3 id="confirmTitle">Are you sure?</h3>
+      <p class="muted" id="confirmText">This cannot be undone.</p>
+      <div class="modal-actions"><button class="btn ghost" id="confirmCancel">Cancel</button><button class="btn primary danger-btn" id="confirmOk">Delete</button></div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
   <script type="module" src="script.js"></script>
-
 </body>
 </html>
