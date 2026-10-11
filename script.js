@@ -5,7 +5,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import {
   onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  signInWithPopup, signOut
+  signInWithPopup, signOut, updateProfile
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
 /* ================= Utilities ================= */
@@ -30,24 +30,216 @@ function showError(msg) {
   if (!msg) { b.hidden = true; b.textContent = ""; return; }
   b.hidden = false; b.textContent = msg;
 }
+
+/* ================= Modal focus management ================= */
+const FOCUSABLE_SEL = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+const modalStack = []; // [{ id, returnEl }] — topmost is last
+
+// Layout-independent focusability check (works in jsdom, refined by checkVisibility in real browsers).
+function isFocusable(el) {
+  if (!el || el.disabled) return false;
+  if (el.hidden || el.closest("[hidden]")) return false;
+  if (el.getAttribute("aria-hidden") === "true") return false;
+  if (typeof el.checkVisibility === "function") {
+    try { if (!el.checkVisibility({ checkVisibilityCSS: true, contentVisibilityAuto: true })) return false; } catch { /* ignore */ }
+  }
+  return true;
+}
+function focusablesIn(root) {
+  return [...root.querySelectorAll(FOCUSABLE_SEL)].filter(isFocusable);
+}
+function topModalFrame() {
+  for (let i = modalStack.length - 1; i >= 0; i--) {
+    const el = $(modalStack[i].id);
+    if (el && !el.hidden) return modalStack[i];
+  }
+  return null;
+}
+function resolveFocusTarget(el, opts = {}) {
+  let first = null;
+  if (opts.focus) first = typeof opts.focus === "string" ? el.querySelector(opts.focus) : opts.focus;
+  if (!first && opts.focusSelector) first = el.querySelector(opts.focusSelector);
+  if (first && isFocusable(first)) return first;
+  return focusablesIn(el)[0] || el;
+}
+// Show a modal, record the element to restore focus to, and move focus into it.
+function openModal(id, opts = {}) {
+  const el = $(id);
+  if (!el) return;
+  el.hidden = false;
+  const hasReturn = opts.returnEl != null; // null/undefined → fall back to activeElement
+  let frame = modalStack.find((f) => f.id === id);
+  if (!frame) {
+    const active = document.activeElement;
+    const defReturn = active && active !== document.body ? active : null;
+    frame = { id, returnEl: hasReturn ? opts.returnEl : defReturn };
+    modalStack.push(frame);
+  } else if (hasReturn) {
+    frame.returnEl = opts.returnEl;
+  }
+  const target = resolveFocusTarget(el, opts);
+  if (target) { try { target.focus(); } catch { /* ignore */ } }
+}
+// Hide a modal and restore focus to its trigger (or the new topmost modal's first focusable).
+function closeModal(id, opts = {}) {
+  const el = $(id);
+  if (!el || el.hidden) return;
+  el.hidden = true;
+  const idx = modalStack.map((f) => f.id).lastIndexOf(id);
+  let returnEl = null;
+  if (idx > -1) { returnEl = modalStack[idx].returnEl; modalStack.splice(idx, 1); }
+  if (opts.skipRestore) return;
+  if (returnEl && returnEl.isConnected && isFocusable(returnEl)) {
+    try { returnEl.focus(); } catch { /* ignore */ }
+    return;
+  }
+  const top = topModalFrame();
+  if (top) {
+    const t = $(top.id);
+    const f = focusablesIn(t)[0] || t;
+    try { f.focus(); } catch { /* ignore */ }
+  }
+}
+
 let confirmResolve = null;
-function askConfirm(text) {
+let habitSnap = null;
+function habitSnapshot() {
+  return JSON.stringify({
+    n: $("fName").value, d: $("fDesc").value, c: $("fCategory").value, i: $("fIcon").value, f: $("fFreq").value,
+    days: [...document.querySelectorAll("#daysRow input:checked")].map((x) => x.value).join(","),
+    color: pickedColor,
+  });
+}
+function askConfirm(text, okLabel = "Delete") {
   $("confirmText").textContent = text;
-  $("confirmModal").hidden = false;
+  $("confirmOk").textContent = okLabel;
+  openModal("confirmModal", { focus: "#confirmOk" });
   return new Promise((res) => { confirmResolve = res; });
 }
 
 /* ================= Theme ================= */
-const themeStore = localStorage.getItem("pht_theme") || "system";
+const themeStore = localStorage.getItem("pht_theme") || "light";
 function applyTheme(mode) {
   const pick = mode === "system"
     ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : mode;
   document.documentElement.dataset.theme = pick;
   const label = pick === "dark" ? "Light mode" : "Dark mode";
-  for (const id of ["themeToggle", "themeToggleSide"]) { const b = $(id); if (b) { b.textContent = label; b.setAttribute("aria-pressed", String(pick === "dark")); } }
+  const icon = pick === "dark" ? "#i-sun" : "#i-moon";
+  for (const id of ["themeToggle", "themeToggleSide"]) {
+    const b = $(id);
+    if (b) {
+      b.innerHTML = `<svg class="ic" aria-hidden="true"><use href="${icon}"/></svg> <span class="tlabel">${label}</span>`;
+      b.setAttribute("aria-label", label);
+      b.setAttribute("aria-pressed", String(pick === "dark"));
+    }
+  }
   if ($("themeSelect")) $("themeSelect").value = mode;
 }
-matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => applyTheme(localStorage.getItem("pht_theme") || "system"));
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => applyTheme(localStorage.getItem("pht_theme") || "light"));
+
+/* ================= Account info (real Firebase user only) ================= */
+function accountName(u) { return u?.displayName || u?.email?.split("@")[0] || "Account"; }
+function accountInitials(u) {
+  const n = u?.displayName?.trim();
+  if (n) return n.split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+  const local = (u?.email || "U").split("@")[0];
+  return local.slice(0, 2).toUpperCase();
+}
+function paintAvatar(el, u) {
+  if (!el) return;
+  el.textContent = accountInitials(u);
+  el.querySelector("img")?.remove();
+  if (u?.photoURL) {
+    const im = document.createElement("img");
+    im.className = "user-img";
+    im.src = u.photoURL;
+    im.alt = "";
+    im.referrerPolicy = "no-referrer";
+    im.onerror = () => im.remove();
+    el.appendChild(im);
+  }
+  el.setAttribute("title", u?.photoURL ? accountName(u) : accountInitials(u));
+}
+function renderAccountInfo(u) {
+  if (!u) return;
+  const name = accountName(u);
+  const email = u.email || "\u2014";
+  if ($("userName")) $("userName").textContent = name;
+  if ($("userEmail")) $("userEmail").textContent = u.email || name;
+  paintAvatar($("userAvatar"), u);
+  if ($("settingsName")) $("settingsName").textContent = name;
+  if ($("settingsEmail")) $("settingsEmail").textContent = email;
+  if ($("dataPath")) $("dataPath").textContent = `users/${u.uid}/habits`;
+  // account modal
+  if ($("acctEmail")) $("acctEmail").textContent = email;
+  if ($("acctStatusLine")) $("acctStatusLine").textContent = "Signed in";
+  if ($("acctNameInput") && document.activeElement !== $("acctNameInput")) $("acctNameInput").value = u.displayName || "";
+  if ($("acctEmailLine")) $("acctEmailLine").textContent = email;
+  const pid = u.providerData?.[0]?.providerId || "";
+  if ($("acctEmailNote")) {
+    const note = $("acctEmailNote");
+    if (pid === "google.com") { note.hidden = false; note.textContent = "Your email is managed by your Google account and can't be changed here."; }
+    else { note.hidden = false; note.textContent = "Changing your email requires a verification flow that isn't available in this app."; }
+  }
+  if ($("acctCreatedRow") && $("acctCreated")) {
+    const ct = u.metadata?.creationTime;
+    if (ct) {
+      const d = new Date(ct);
+      $("acctCreatedRow").hidden = false;
+      $("acctCreated").textContent = Number.isNaN(d.getTime()) ? ct : d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+    } else $("acctCreatedRow").hidden = true;
+  }
+  if ($("acctTheme")) {
+    const t = document.documentElement.dataset.theme || "light";
+    $("acctTheme").textContent = t === "dark" ? "Dark" : "Light";
+  }
+  if ($("acctProvider")) $("acctProvider").textContent = pid === "google.com" ? "Google" : pid === "password" ? "Email & password" : pid || "\u2014";
+  if ($("acctPath")) $("acctPath").textContent = `users/${u.uid}`;
+  paintAvatar($("acctAvatar"), u);
+}
+let acctSaving = false;
+async function saveProfileName(e) {
+  e?.preventDefault();
+  if (acctSaving || !user) return;
+  const input = $("acctNameInput"), err = $("acctNameErr"), okMsg = $("acctNameOk");
+  const value = input.value.trim().replace(/\s+/g, " ");
+  err.hidden = true; okMsg.hidden = true; input.removeAttribute("aria-invalid");
+  if (value.length > 50) { err.textContent = "Name must be 50 characters or fewer."; err.hidden = false; input.setAttribute("aria-invalid", "true"); input.focus(); return; }
+  if (!value) { err.textContent = "Please enter a name."; err.hidden = false; input.setAttribute("aria-invalid", "true"); input.focus(); return; }
+  if (value === (user.displayName || "")) { err.textContent = "Enter a new name to save."; err.hidden = false; input.setAttribute("aria-invalid", "true"); input.focus(); return; }
+  acctSaving = true;
+  const btn = $("acctSaveBtn");
+  btn.disabled = true; btn.classList.add("loading");
+  try {
+    await updateProfile(user, { displayName: value || null });
+    renderAccountInfo(user);
+    okMsg.textContent = "Profile updated.";
+    okMsg.hidden = false;
+    toast("Profile updated.", "ok");
+  } catch (err2) {
+    console.error("updateProfile failed", err2?.code || err2?.message || "unknown");
+    err.textContent = "Couldn't save your name. Please try again.";
+    err.hidden = false;
+  } finally {
+    acctSaving = false;
+    btn.disabled = false; btn.classList.remove("loading");
+  }
+}
+async function confirmLogout() {
+  const ok = await askConfirm("Are you sure you want to log out?", "Log out");
+  if (!ok) return;
+  closeModal("accountModal", { skipRestore: true });
+  for (const id of ["logoutBtn", "acctLogoutBtn"]) { const b = $(id); if (b) { b.disabled = true; b.classList.add("loading"); } }
+  try {
+    await signOut(auth);
+    toast("Signed out.");
+  } catch (err2) {
+    console.error("signOut failed", err2?.code || err2?.message || "unknown");
+    toast("Sign-out failed. Please try again.", "err");
+  } finally {
+    for (const id of ["logoutBtn", "acctLogoutBtn"]) { const b = $(id); if (b) { b.disabled = false; b.classList.remove("loading"); } }
+  }
+}
 
 /* ================= State ================= */
 let user = null;
@@ -132,12 +324,12 @@ function milestones(stats) {
   const anyStreak = Math.max(0, ...stats.per.map((p) => p.s.longest));
   const total = stats.totalDone;
   const defs = [
-    { id: "s7", name: "7-day streak", desc: "Reach a 7-day streak on any habit", ok: anyStreak >= 7 },
-    { id: "s14", name: "14-day streak", desc: "Reach a 14-day streak on any habit", ok: anyStreak >= 14 },
-    { id: "s30", name: "30-day streak", desc: "Reach a 30-day streak on any habit", ok: anyStreak >= 30 },
-    { id: "c50", name: "50 completions", desc: "Complete habits 50 times in total", ok: total >= 50 },
-    { id: "c100", name: "100 completions", desc: "Complete habits 100 times in total", ok: total >= 100 },
-    { id: "week", name: "Strong week", desc: "Reach 80%+ completion over the last 7 days", ok: stats.weekRate >= 80 && stats.per.length > 0 },
+    { id: "s7", name: "7-day streak", desc: "Reach a 7-day streak on any habit", ok: anyStreak >= 7, progress: `${Math.min(anyStreak, 7)}/7 days`, pct: Math.min(100, Math.round((anyStreak / 7) * 100)) },
+    { id: "s14", name: "14-day streak", desc: "Reach a 14-day streak on any habit", ok: anyStreak >= 14, progress: `${Math.min(anyStreak, 14)}/14 days`, pct: Math.min(100, Math.round((anyStreak / 14) * 100)) },
+    { id: "s30", name: "30-day streak", desc: "Reach a 30-day streak on any habit", ok: anyStreak >= 30, progress: `${Math.min(anyStreak, 30)}/30 days`, pct: Math.min(100, Math.round((anyStreak / 30) * 100)) },
+    { id: "c50", name: "50 completions", desc: "Complete habits 50 times in total", ok: total >= 50, progress: `${Math.min(total, 50)}/50`, pct: Math.min(100, Math.round((total / 50) * 100)) },
+    { id: "c100", name: "100 completions", desc: "Complete habits 100 times in total", ok: total >= 100, progress: `${Math.min(total, 100)}/100`, pct: Math.min(100, Math.round((total / 100) * 100)) },
+    { id: "week", name: "Strong week", desc: "Reach 80%+ completion over the last 7 days", ok: stats.weekRate >= 80 && stats.per.length > 0, progress: `${stats.weekRate}% of 80% target`, pct: Math.min(100, Math.round((stats.weekRate / 80) * 100)) },
   ];
   return defs;
 }
@@ -172,6 +364,11 @@ function setAuthMode(m) {
   $("tabLogin").setAttribute("aria-selected", String(m === "login"));
   $("tabSignup").setAttribute("aria-selected", String(m === "signup"));
   $("authSubmit").textContent = m === "login" ? "Log in" : "Create account";
+  $("authTitle").textContent = m === "login" ? "Welcome back" : "Create your account";
+  $("authSub").textContent = m === "login"
+    ? "Log in to continue building your streaks."
+    : "Start tracking habits on your own private dashboard.";
+  $("authPassword").autocomplete = m === "login" ? "current-password" : "new-password";
 }
 function authErr(msg) { const e = $("authError"); e.hidden = !msg; e.textContent = msg || ""; }
 
@@ -180,8 +377,10 @@ const habitsCol = () => collection(db, "users", user.uid, "habits");
 const habitDoc = (id) => doc(db, "users", user.uid, "habits", id);
 
 /* ================= CRUD ================= */
+let habitSaving = false;
 async function saveHabit(e) {
   e?.preventDefault();
+  if (habitSaving) return;
   const name = $("fName").value.trim();
   if (name.length < 2) { formErr("Give your habit a name (2+ characters)."); return; }
   const freqType = $("fFreq").value;
@@ -199,7 +398,9 @@ async function saveHabit(e) {
     updatedAt: serverTimestamp(),
   };
   try {
+    habitSaving = true;
     $("saveHabitBtn").disabled = true;
+    $("saveHabitBtn").classList.add("loading");
     if (id) { await updateDoc(habitDoc(id), payload); toast("Habit updated."); }
     else {
       await addDoc(habitsCol(), { ...payload, completions: [], createdAt: serverTimestamp() });
@@ -207,9 +408,9 @@ async function saveHabit(e) {
       await setDoc(doc(db, "users", user.uid), { email: user.email || "", updatedAt: serverTimestamp() }, { merge: true });
       toast("Habit created. Good luck!", "ok");
     }
-    closeHabitModal();
+    closeHabitModal(true);
   } catch (err) { console.error(err); formErr(friendlyErr(err)); }
-  finally { $("saveHabitBtn").disabled = false; }
+  finally { habitSaving = false; $("saveHabitBtn").disabled = false; $("saveHabitBtn").classList.remove("loading"); }
 }
 function formErr(m) { const e = $("formError"); e.hidden = !m; e.textContent = m || ""; }
 async function toggleDone(id, dateKey = todayKey()) {
@@ -242,59 +443,95 @@ function friendlyErr(err) {
 
 /* ================= Rendering ================= */
 function habitCardHTML(h, s) {
-  return `<article class="habit-card" data-open="${h.id}" tabindex="0" role="button" aria-label="Open ${esc(h.name)} details">
+  const sched = isScheduled(h, todayKey());
+  const statusCls = s.doneToday ? "status-done" : sched ? "status-todo" : "status-off";
+  const statusTxt = s.doneToday ? "Done today" : sched ? "To do today" : "Not scheduled today";
+  return `<article class="habit-card" data-open="${h.id}" style="--hc:${esc(h.color || "#2563eb")}">
     <div class="habit-card-top">
-      <span class="habit-dot" style="background:${esc(h.color || "#2f6df6")}" aria-hidden="true">${esc(h.icon || "◉")}</span>
-      <div class="habit-meta"><b>${esc(h.name)}</b><span class="habit-sub">${esc(h.category || "Other")} · ${s.doneToday ? "Done today" : (isScheduled(h, todayKey()) ? "To do today" : "Not scheduled today")}</span></div>
-      <span class="streak-chip">${s.current}d streak</span>
+      <span class="habit-dot" style="background:${esc(h.color || "#2563eb")}" aria-hidden="true">${esc(h.icon || "◉")}</span>
+      <div class="habit-meta">
+        <button class="habit-name-btn" type="button" data-open="${h.id}">${esc(h.name)}</button>
+        <span class="habit-sub">${esc(h.category || "Other")}<span class="dot-sep"></span>${esc(h.frequency?.type === "weekdays" ? "Weekdays" : h.frequency?.type === "custom" ? "Custom" : "Every day")}</span>
+      </div>
+      <span class="streak-chip ${s.current === 0 ? "zero" : ""}"><svg class="ic" aria-hidden="true"><use href="#i-flame"/></svg>${s.current}d</span>
     </div>
-    <div class="progress" aria-hidden="true"><div class="progress-fill" style="width:${s.rate}%"></div></div>
-    <div class="rate-line"><span>${s.rate}% · ${s.total} completions</span><span>Best ${s.longest}d</span></div>
-    <div class="habit-actions" style="margin-top:10px">
-      <button class="mini-btn ${s.doneToday ? "done-state" : ""}" data-toggle="${h.id}">${s.doneToday ? "✓ Done" : "Mark done"}</button>
-      <button class="mini-btn" data-edit="${h.id}">Edit</button>
-      <button class="mini-btn" data-del="${h.id}">Delete</button>
+    <div class="status-line"><span class="${statusCls}">${statusTxt}</span><span class="num">${s.rate}%</span></div>
+    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${s.rate}" aria-label="${esc(h.name)} completion rate"><div class="progress-fill" style="width:${s.rate}%"></div></div>
+    <div class="rate-line"><span>${s.total} completions</span><span>Best ${s.longest}d</span></div>
+    <div class="habit-actions">
+      <button class="act-btn ${s.doneToday ? "is-done" : "complete"}" data-toggle="${h.id}" aria-pressed="${s.doneToday}" aria-label="${s.doneToday ? "Undo" : "Mark"} ${esc(h.name)} ${s.doneToday ? "today" : "done"}" type="button">
+        <svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>${s.doneToday ? "Done" : "Mark done"}
+      </button>
+      <button class="act-btn" data-edit="${h.id}" aria-label="Edit ${esc(h.name)}" title="Edit" type="button"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg></button>
+      <button class="act-btn danger" data-del="${h.id}" aria-label="Delete ${esc(h.name)}" title="Delete" type="button"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></button>
     </div>
   </article>`;
 }
+const emptyState = (icon, title, body, cta) =>
+  `<div class="empty in-card"><span class="empty-ic"><svg class="ic"><use href="#${icon}"/></svg></span><h3>${esc(title)}</h3><p>${esc(body)}</p>${cta ? `<button class="btn primary" data-add-habit type="button"><svg class="ic ic-sm"><use href="#i-plus"/></svg> ${esc(cta)}</button>` : ""}</div>`;
 function renderAll() {
   if (!user) return;
   showError(null);
-  renderDashboard(); renderHabitsView(); renderHeatmap(); renderAnalytics(); renderAchievements(); renderSettingsMeta();
+  renderDashboard(); renderHabitsView(); renderHeatmap(); renderAnalytics(); renderAchievements(); renderSettingsMeta(); renderCycle();
   if (detailId) renderDetailBody();
 }
 function renderDashboard() {
   const hr = new Date().getHours();
-  $("greeting").textContent = `${hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening"}${user?.email ? ", " + esc(user.email.split("@")[0]) : ""}`;
+  $("greeting").textContent = `${hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening"}${user ? ", " + accountName(user) : ""}`;
   $("dateLine").textContent = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
   const st = accountStats();
   const cards = [
-    { k: "Today", v: `${st.todayDone}/${st.schedToday}`, s: "completed" },
-    { k: "Week rate", v: `${st.weekRate}%`, s: "last 7 days" },
-    { k: "Best streak", v: st.best ? `${st.best.s.longest}d` : "—", s: st.best ? st.best.h.name : "no data" },
-    { k: "Total done", v: String(st.totalDone), s: "all time" },
+    { k: "Today", v: `${st.todayDone}/${st.schedToday}`, s: "completed", i: "i-check-c" },
+    { k: "Week rate", v: `${st.weekRate}%`, s: "last 7 days", i: "i-chart" },
+    { k: "Best streak", v: st.best ? `${st.best.s.longest}d` : "—", s: st.best ? st.best.h.name : "no data yet", i: "i-flame" },
+    { k: "Total done", v: String(st.totalDone), s: "all time", i: "i-award" },
   ];
-  $("statCards").innerHTML = cards.map((c) => `<div class="stat"><div class="k">${c.k}</div><div class="v">${esc(c.v)}</div><div class="muted small">${esc(c.s)}</div></div>`).join("");
+  $("statCards").innerHTML = cards.map((c) => `<div class="stat">
+    <span class="stat-ic" aria-hidden="true"><svg class="ic"><use href="#${c.i}"/></svg></span>
+    <div class="k">${c.k}</div><div class="v">${esc(c.v)}</div><div class="s">${esc(c.s)}</div>
+  </div>`).join("");
   const pct = st.schedToday ? Math.round((st.todayDone / st.schedToday) * 100) : 0;
   $("todayCount").textContent = `${st.todayDone}/${st.schedToday}`;
+  $("todaySub").textContent = st.schedToday
+    ? `${st.todayDone} of ${st.schedToday} scheduled habits complete`
+    : "No habits scheduled today";
   $("todayProgress").style.width = `${pct}%`;
+  $("todayProgress").parentElement.setAttribute("aria-valuenow", String(pct));
+  const rail = $("todayProgress").parentElement;
+  if (st.schedToday) {
+    rail.dataset.segs = String(st.schedToday);
+    rail.style.setProperty("--segs", String(st.schedToday));
+  } else {
+    delete rail.dataset.segs;
+    rail.style.removeProperty("--segs");
+  }
   const todays = habits.filter((h) => isScheduled(h, todayKey()));
   $("todayList").innerHTML = todays.length ? todays.map((h) => {
     const s = calcHabitStats(h);
     return `<div class="habit-row ${s.doneToday ? "done" : ""}">
+      <button class="check-btn" data-toggle="${h.id}" aria-pressed="${s.doneToday}" aria-label="${s.doneToday ? "Undo" : "Complete"} ${esc(h.name)} today" type="button"><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg></button>
       <span class="habit-dot" style="background:${esc(h.color)}" aria-hidden="true">${esc(h.icon)}</span>
-      <div class="habit-meta"><b>${esc(h.name)}</b><span class="habit-sub">${esc(h.category)} · ${s.current}d streak</span></div>
-      <div class="habit-actions">
-        <button class="mini-btn ${s.doneToday ? "done-state" : ""}" data-toggle="${h.id}" aria-pressed="${s.doneToday}">${s.doneToday ? "✓ Done" : "Mark done"}</button>
-        <button class="mini-btn" data-open-btn="${h.id}">Details</button>
-      </div></div>`;
-  }).join("") : `<div class="empty"><h3>Nothing scheduled today</h3><p>Create a habit or adjust its schedule.</p></div>`;
-  // week strip
+      <div class="habit-meta">
+        <button class="habit-name-btn" type="button" data-open="${h.id}">${esc(h.name)}</button>
+        <span class="habit-sub">${esc(h.category)}<span class="dot-sep"></span>${s.total} total</span>
+      </div>
+      <span class="streak-chip ${s.current === 0 ? "zero" : ""}"><svg class="ic" aria-hidden="true"><use href="#i-flame"/></svg>${s.current}d</span>
+    </div>`;
+  }).join("") : habits.length === 0
+    ? emptyState("i-list", "Create your first habit", "Track something small today — streaks and insights build from there.", "New habit")
+    : emptyState("i-cal", "Nothing scheduled today", "Enjoy the rest of your day, or add another habit to your schedule.", "New habit");
+  // week strip: done/scheduled per day
   $("weekStrip").innerHTML = [...Array(7)].map((_, i) => {
     const d = addDays(new Date(), i - 3);
     const k = toKey(d);
-    const n = habits.reduce((a, h) => a + ((h.completions || []).includes(k) ? 1 : 0), 0);
-    return `<div class="day-cell ${k === todayKey() ? "today" : ""}"><b>${d.toLocaleDateString(undefined, { weekday: "short" })}</b><div style="font-weight:800">${n}</div><span class="muted small">${d.getDate()}</span></div>`;
+    const done = habits.reduce((a, h) => a + ((h.completions || []).includes(k) ? 1 : 0), 0);
+    const sched = habits.reduce((a, h) => a + (isScheduled(h, k) ? 1 : 0), 0);
+    const cls = sched && done === sched ? "all-done" : done > 0 ? "some" : "";
+    return `<div class="day-cell ${k === todayKey() ? "today" : ""}" title="${k}: ${done}/${sched} completed">
+      <span class="dw">${d.toLocaleDateString(undefined, { weekday: "short" })}</span>
+      <span class="dn">${d.getDate()}</span>
+      <span class="dr ${cls}">${sched ? `${done}/${sched}` : "—"}</span>
+    </div>`;
   }).join("");
   $("insightsList").innerHTML = buildInsights().map((t) => `<li>${esc(t)}</li>`).join("");
   const xp = xpFor(st), lv = levelFor(xp);
@@ -318,8 +555,11 @@ function filteredHabits() {
 }
 function renderHabitsView() {
   const list = filteredHabits();
+  $("habitCount").textContent = list.length === habits.length ? String(habits.length) : `${list.length} of ${habits.length}`;
   $("allHabits").innerHTML = list.length ? list.map((p) => habitCardHTML(p.h, p.s)).join("")
-    : `<div class="empty card"><h3>No habits match</h3><p>Try clearing search/filters, or create a new habit.</p></div>`;
+    : habits.length === 0
+      ? emptyState("i-list", "No habits yet", "Create your first habit — give it a schedule and the streak engine does the rest.", "New habit")
+      : emptyState("i-search", "No habits match", "Try clearing the search or filters to see all of your habits.");
 }
 function renderHeatmap() {
   const sel = $("heatmapHabit").value || "__all";
@@ -335,36 +575,67 @@ function renderHeatmap() {
   // align start to Monday for stable grid
   const d0 = addDays(start, -((start.getDay() + 6) % 7));
   let html = "";
+  let months = "";
+  let col = -1, lastMonth = -1;
+  const now = new Date();
   for (let d = new Date(d0); d <= end; d = addDays(d, 1)) {
+    if ((d.getDay() + 6) % 7 === 0) { // new column = new week
+      col++;
+      if (d.getMonth() !== lastMonth) {
+        months += `<span>${col === 0 || lastMonth === -1 ? "" : d.toLocaleDateString(undefined, { month: "short" })}</span>`;
+        lastMonth = d.getMonth();
+      } else months += `<span></span>`;
+    }
     const k = toKey(d);
     const c = counts[k] || 0;
     const lvl = c === 0 ? 0 : Math.min(4, Math.ceil((c / max) * 4));
-    const future = d > new Date();
-    html += `<button class="hm-cell ${selectedDay === k ? "sel" : ""}" data-l="${lvl}" data-day="${k}" role="gridcell" aria-label="${k}: ${c} completions" title="${k}: ${c}" ${future ? "disabled" : ""} style="${future ? "opacity:.3" : ""}"></button>`;
+    const future = d > now;
+    html += `<button class="hm-cell ${selectedDay === k ? "sel" : ""}" data-l="${lvl}" data-day="${k}" role="gridcell" aria-label="${k}: ${c} completion${c === 1 ? "" : "s"}" title="${k}: ${c} completion${c === 1 ? "" : "s"}" ${future ? "disabled" : ""}></button>`;
   }
+  // month label at grid start: put first column's month when col 0
+  if (months.startsWith("<span></span>")) {
+    months = months.replace("<span></span>", `<span>${d0.toLocaleDateString(undefined, { month: "short" })}</span>`);
+  }
+  $("hmMonths").innerHTML = months;
   $("heatmap").innerHTML = html;
   renderDayDetail();
 }
 function renderDayDetail() {
   const box = $("dayDetail");
-  if (!selectedDay) { box.innerHTML = `<p class="muted">Click a day to see its activity.</p>`; return; }
+  if (!selectedDay) { box.innerHTML = `<p class="muted">Click a day above to see which habits were completed.</p>`; return; }
   const items = habits.filter((h) => (h.completions || []).includes(selectedDay));
-  box.innerHTML = `<b>${esc(selectedDay)}</b> — ${items.length} completion${items.length === 1 ? "" : "s"}` +
-    (items.length ? `<ul class="insights">${items.map((h) => `<li>${esc(h.icon)} ${esc(h.name)} (${esc(h.category)})</li>`).join("")}</ul>`
-      : `<p class="muted">No completions. ${calcMissed(selectedDay)} habit(s) were scheduled but missed.</p>`);
+  const missed = calcMissed(selectedDay);
+  const dLabel = parseKey(selectedDay).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  box.innerHTML = `<div class="dd-title">${esc(dLabel)}<span class="pill ${items.length ? "success" : ""}">${items.length} completion${items.length === 1 ? "" : "s"}</span></div>` +
+    (items.length
+      ? `<div class="day-chips">${items.map((h) => `<span class="day-chip"><span class="habit-dot" style="background:${esc(h.color)}" aria-hidden="true">${esc(h.icon)}</span>${esc(h.name)} <span class="muted">${esc(h.category)}</span></span>`).join("")}</div>`
+      : `<p class="muted">${missed ? `No completions — ${missed} scheduled habit${missed === 1 ? " was" : "s were"} missed.` : "No completions were scheduled for this day."}</p>`);
 }
 function calcMissed(key) { return habits.filter((h) => isScheduled(h, key) && !(h.completions || []).includes(key) && key !== todayKey()).length; }
 function renderAnalytics() {
   const st = accountStats();
   const cards = [
-    { k: "7-day rate", v: `${st.weekRate}%` }, { k: "Today", v: `${st.todayDone}/${st.schedToday}` },
-    { k: "Current best", v: st.best ? `${st.best.s.current}d` : "—" }, { k: "Longest ever", v: st.best ? `${st.best.s.longest}d` : "—" },
+    { k: "7-day rate", v: `${st.weekRate}%`, i: "i-chart" },
+    { k: "Today", v: `${st.todayDone}/${st.schedToday}`, i: "i-check-c" },
+    { k: "Current best", v: st.best ? `${st.best.s.current}d` : "—", i: "i-flame" },
+    { k: "Longest ever", v: st.best ? `${st.best.s.longest}d` : "—", i: "i-trophy" },
   ];
-  $("analyticsStats").innerHTML = cards.map((c) => `<div class="stat"><div class="k">${c.k}</div><div class="v">${esc(c.v)}</div></div>`).join("");
+  $("analyticsStats").innerHTML = cards.map((c) => `<div class="stat">
+    <span class="stat-ic" aria-hidden="true"><svg class="ic"><use href="#${c.i}"/></svg></span>
+    <div class="k">${c.k}</div><div class="v">${esc(c.v)}</div>
+  </div>`).join("");
   // last 7 days bars (absolute completions)
   const wk = [...Array(7)].map((_, i) => { const d = addDays(new Date(), i - 6); return { k: toKey(d), label: d.toLocaleDateString(undefined, { weekday: "short" }), n: habits.reduce((a, h) => a + ((h.completions || []).includes(toKey(d)) ? 1 : 0), 0) }; });
   const wmax = Math.max(1, ...wk.map((x) => x.n));
-  $("chartWeek").innerHTML = wk.map((x) => `<div class="bar"><i style="height:${Math.max(4, (x.n / wmax) * 120)}px"></i><span>${x.label}</span><span><b>${x.n}</b></span></div>`).join("");
+  $("chartWeek").innerHTML = wk.map((x) => `<div class="bar" title="${x.label}: ${x.n} completion${x.n === 1 ? "" : "s"}">
+    <span class="bar-plot"><i style="height:${Math.max(3, (x.n / wmax) * 110)}px"></i></span>
+    <span class="bar-v">${x.n}</span><span class="bar-l">${x.label}</span>
+  </div>`).join("");
+  const wTotal = wk.reduce((a, x) => a + x.n, 0);
+  const bestDay = wk.reduce((m, x) => (x.n > m.n ? x : m), wk[0]);
+  $("chartWeekNote").textContent = wTotal
+    ? `${wTotal} completions this week · strongest day: ${bestDay.label} (${bestDay.n})`
+    : "No completions recorded in the last 7 days.";
   // last 30 days in 6 buckets of 5 days
   const buckets = [...Array(6)].map((_, b) => {
     const from = addDays(new Date(), -(29 - b * 5) - 4), to = addDays(new Date(), -(29 - b * 5));
@@ -372,26 +643,49 @@ function renderAnalytics() {
     return { label: `${to.getDate()}/${to.getMonth() + 1}`, n };
   });
   const bmax = Math.max(1, ...buckets.map((x) => x.n));
-  $("chartMonth").innerHTML = buckets.map((x) => `<div class="bar"><i style="height:${Math.max(4, (x.n / bmax) * 120)}px"></i><span>${x.label}</span><span><b>${x.n}</b></span></div>`).join("");
+  $("chartMonth").innerHTML = buckets.map((x) => `<div class="bar" title="Period ending ${x.label}: ${x.n} completions">
+    <span class="bar-plot"><i style="height:${Math.max(3, (x.n / bmax) * 110)}px"></i></span>
+    <span class="bar-v">${x.n}</span><span class="bar-l">${x.label}</span>
+  </div>`).join("");
+  const bTotal = buckets.reduce((a, x) => a + x.n, 0);
+  $("chartMonthNote").textContent = bTotal
+    ? `${bTotal} completions across the last 30 days`
+    : "No completions recorded in the last 30 days.";
   const per = [...st.per].sort((a, b) => b.s.rate - a.s.rate).slice(0, 6);
-  $("chartHabits").innerHTML = per.length ? per.map((p) => `<div class="hbar"><span>${esc(p.h.name.slice(0, 20))}</span><div class="track"><div class="fill" style="width:${p.s.rate}%"></div></div><b>${p.s.rate}%</b></div>`).join("") : `<p class="muted">No habits yet.</p>`;
+  $("chartHabits").innerHTML = per.length ? per.map((p, i) => `<div class="hbar">
+    <span class="hb-label ${i === 0 ? "best" : ""}" title="${esc(p.h.name)}">${esc(p.h.name.slice(0, 28))}</span>
+    <div class="track"><div class="fill" style="width:${p.s.rate}%"></div></div><b>${p.s.rate}%</b>
+  </div>`).join("") : `<p class="muted">No habits yet — add one to see consistency.</p>`;
   const cats = {};
   for (const p of st.per) { (cats[p.h.category] ||= { d: 0, s: 0 }); cats[p.h.category].d += p.s.completed; cats[p.h.category].s += p.s.scheduledTotal; }
   const rows = Object.entries(cats).map(([c, v]) => ({ c, r: v.s ? Math.round((v.d / v.s) * 100) : 0 })).sort((a, b) => b.r - a.r);
-  $("chartCategories").innerHTML = rows.length ? rows.map((x) => `<div class="hbar"><span>${esc(x.c)}</span><div class="track"><div class="fill" style="width:${x.r}%"></div></div><b>${x.r}%</b></div>`).join("") : `<p class="muted">No data yet.</p>`;
+  $("chartCategories").innerHTML = rows.length ? rows.map((x, i) => `<div class="hbar">
+    <span class="hb-label ${i === 0 ? "best" : ""}">${esc(x.c)}</span>
+    <div class="track"><div class="fill" style="width:${x.r}%"></div></div><b>${x.r}%</b>
+  </div>`).join("") : `<p class="muted">No data yet.</p>`;
 }
 function renderAchievements() {
   const st = accountStats();
   const xp = xpFor(st), lv = levelFor(xp);
-  $("xpLevel").textContent = `Level ${lv.level}`;
+  $("xpLevel").textContent = String(lv.level);
   $("xpFill").style.width = `${(lv.into / 200) * 100}%`;
-  $("xpText").textContent = `${xp} XP · ${200 - lv.into} XP to Level ${lv.level + 1} · ${st.totalDone} total completions`;
-  $("badges").innerHTML = milestones(st).map((m) =>
-    `<div class="badge ${m.ok ? "earned" : "locked"}"><div class="t">${m.ok ? "✓" : "○"} ${esc(m.name)}</div><p class="muted small">${esc(m.desc)}</p><span class="pill">${m.ok ? "Earned" : "Locked"}</span></div>`).join("");
+  $("xpFill").parentElement.setAttribute("aria-valuenow", String(lv.into));
+  $("xpText").textContent = `${xp} XP earned · ${st.totalDone} total completions`;
+  $("xpNext").textContent = `${200 - lv.into} XP to Level ${lv.level + 1}`;
+  const icons = { s7: "i-flame", s14: "i-flame", s30: "i-flame", c50: "i-target", c100: "i-target", week: "i-cal" };
+  $("badges").innerHTML = milestones(st).map((m) => `
+    <div class="badge ${m.ok ? "earned" : "locked"}">
+      <span class="badge-ic" aria-hidden="true"><svg class="ic"><use href="#${m.ok ? "i-check-c" : (icons[m.id] || "i-award")}"/></svg></span>
+      <div class="badge-body">
+        <div class="t">${esc(m.name)}<span class="pill ${m.ok ? "success" : ""}">${m.ok ? "Earned" : "Locked"}</span></div>
+        <p class="desc">${esc(m.desc)}</p>
+        <div class="prog-line ${m.ok ? "ok" : ""}">${m.ok ? "Completed" : esc(m.progress)}</div>
+        <div class="mini-track"><div class="mini-fill" style="width:${m.ok ? 100 : m.pct}%"></div></div>
+      </div>
+    </div>`).join("");
 }
 function renderSettingsMeta() {
-  $("settingsEmail").textContent = user?.email || "—";
-  $("dataPath").textContent = `users/${user?.uid || "{uid}"}/habits`;
+  renderAccountInfo(user);
   const r = loadReminders();
   $("reminderTime").value = r.time; $("reminderEnabled").checked = r.enabled;
   updateNotifStatus();
@@ -402,31 +696,57 @@ function renderDetailBody() {
   const h = habits.find((x) => x.id === detailId);
   if (!h) return;
   const s = calcHabitStats(h);
-  const recent = [...(h.completions || [])].sort().reverse().slice(0, 10);
+  const recent = [...(h.completions || [])].sort().reverse().slice(0, 12);
   const last35 = [...Array(35)].map((_, i) => toKey(addDays(new Date(), i - 34)));
+  const freq = h.frequency?.type || "daily";
+  const freqLabel = freq === "weekdays" ? "Weekdays (Mon–Fri)" : freq === "custom" ? "Custom schedule" : "Every day";
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const activeDays = freq === "custom" ? (h.frequency?.days || []).map((d) => dayNames[d]).join(" · ") : freq === "weekdays" ? "Mon · Tue · Wed · Thu · Fri" : "All 7 days";
   $("detailTitle").textContent = `${h.icon || ""} ${h.name}`;
   $("detailBody").innerHTML = `
-    <p class="muted">${esc(h.category || "")} · ${esc(h.frequency?.type || "daily")} · since ${esc(habitCreatedKey(h))}</p>
-    ${h.description ? `<p>${esc(h.description)}</p>` : ""}
-    <div class="grid stats-grid" style="grid-template-columns:repeat(4,1fr)">
+    <div class="detail-meta">
+      <span class="pill accent">${esc(h.category || "Other")}</span>
+      <span class="pill"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-cal"/></svg> ${freqLabel}</span>
+      <span class="pill">Since ${esc(habitCreatedKey(h))}</span>
+    </div>
+    ${h.description ? `<p class="detail-desc">${esc(h.description)}</p>` : ""}
+    <div class="detail-grid">
       <div class="stat"><div class="k">Streak</div><div class="v">${s.current}</div></div>
       <div class="stat"><div class="k">Longest</div><div class="v">${s.longest}</div></div>
       <div class="stat"><div class="k">Rate</div><div class="v">${s.rate}%</div></div>
       <div class="stat"><div class="k">Total</div><div class="v">${s.total}</div></div>
     </div>
-    <h4>Last 35 days</h4>
-    <div style="display:flex;gap:5px;flex-wrap:wrap">${last35.map((k) => {
-      const done = (h.completions || []).includes(k);
-      const sched = isScheduled(h, k);
-      const bg = done ? "var(--good)" : sched ? "var(--surface-2)" : "transparent";
-      return `<span title="${k}${done ? " ✓" : sched ? " (scheduled)" : " (off-day)"}" style="width:18px;height:18px;border-radius:5px;border:1px solid var(--border);background:${bg};display:inline-block"></span>`;
-    }).join("")}</div>
-    <h4>Recent completions</h4>
-    ${recent.length ? `<ul class="insights">${recent.map((k) => `<li>${esc(k)}</li>`).join("")}</ul>` : `<p class="muted">No completions yet — mark today done to start your streak.</p>`}`;
-  $("detailToggleBtn").textContent = s.doneToday ? "Undo today" : "Mark today done";
+    <div class="detail-section">
+      <h4>Schedule</h4>
+      <p class="small">${esc(activeDays)} · ${s.scheduledTotal} scheduled days since creation · ${s.missed} missed</p>
+    </div>
+    <div class="detail-section">
+      <h4>Last 35 days</h4>
+      <div class="hist-grid">${last35.map((k) => {
+        const done = (h.completions || []).includes(k);
+        const sched = isScheduled(h, k);
+        const missed = !done && sched && k !== todayKey();
+        const cls = done ? "done" : missed ? "missed" : sched ? "sched" : "";
+        const state = done ? "completed" : missed ? "missed" : sched ? "not yet completed" : "off-day";
+        return `<span class="hist-cell ${cls}" title="${k}: ${state}"></span>`;
+      }).join("")}</div>
+      <div class="hist-legend">
+        <span><i style="background:var(--success);border-color:var(--success)"></i> Completed</span>
+        <span><i style="background:var(--danger-soft)"></i> Missed</span>
+        <span><i style="background:var(--surface-2)"></i> Scheduled</span>
+        <span><i></i> Off-day</span>
+      </div>
+    </div>
+    <div class="detail-section">
+      <h4>Recent completions</h4>
+      ${recent.length
+        ? `<ul class="recent-list">${recent.map((k) => `<li>${esc(k)}</li>`).join("")}</ul>`
+        : `<p class="muted small">No completions yet — mark today done to start your streak.</p>`}
+    </div>`;
+  $("detailToggleBtn").innerHTML = `<svg class="ic ic-sm" aria-hidden="true"><use href="#i-check"/></svg> ${s.doneToday ? "Undo today" : "Mark today done"}`;
 }
-function openDetail(id) { detailId = id; renderDetailBody(); $("detailModal").hidden = false; }
-function closeDetail() { detailId = null; $("detailModal").hidden = true; }
+function openDetail(id, trigger = null) { detailId = id; renderDetailBody(); openModal("detailModal", { focus: "#closeDetailBtn", returnEl: trigger }); }
+function closeDetail() { detailId = null; closeModal("detailModal"); }
 
 /* ================= Habit modal ================= */
 function paintSwatches() {
@@ -437,7 +757,7 @@ function paintDays() {
   const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   $("daysRow").innerHTML = names.map((n, i) => `<label><input type="checkbox" value="${i}" ${[1, 2, 3, 4, 5].includes(i) ? "checked" : ""}>${n}</label>`).join("");
 }
-function openHabitModal(h = null) {
+function openHabitModal(h = null, trigger = null) {
   formErr(null);
   $("habitModalTitle").textContent = h ? "Edit habit" : "New habit";
   $("habitId").value = h?.id || "";
@@ -452,10 +772,263 @@ function openHabitModal(h = null) {
     document.querySelectorAll("#daysRow input").forEach((c) => { c.checked = h.frequency.days.includes(Number(c.value)); });
   }
   $("customDays").hidden = $("fFreq").value !== "custom";
-  $("habitModal").hidden = false;
-  setTimeout(() => $("fName").focus(), 30);
+  openModal("habitModal", { focus: "#fName", returnEl: trigger });
+  habitSnap = habitSnapshot();
 }
-function closeHabitModal() { $("habitModal").hidden = true; }
+async function closeHabitModal(force = false) {
+  if (!force && $("habitModal").hidden !== true) {
+    if (habitSnap !== null && habitSnapshot() !== habitSnap) {
+      const ok = await askConfirm("Discard unsaved changes to this habit?", "Discard");
+      if (!ok) return;
+    }
+  }
+  habitSnap = null;
+  closeModal("habitModal");
+}
+
+/* ================= Cycle Tracker (optional, private, per-user) ================= */
+let cycleData = { enabled: false, entries: [], reminder: false };
+const CYC_SYMPTOMS = ["Cramps", "Headache", "Fatigue", "Bloating", "Mood changes", "Other"];
+const isKey = (k) => typeof k === "string" && /^\d{4}-\d{2}-\d{2}$/.test(k);
+const userDocRef = () => doc(db, "users", user.uid);
+function sanitizeCycle(raw) {
+  const entries = Array.isArray(raw?.entries) ? raw.entries
+    .filter((e) => e && isKey(e.start))
+    .map((e) => ({
+      id: String(e.id || e.start),
+      start: e.start,
+      end: isKey(e.end || "") ? e.end : null,
+      symptoms: Array.isArray(e.symptoms) ? e.symptoms.filter((s) => CYC_SYMPTOMS.includes(s)) : [],
+      note: typeof e.note === "string" ? e.note.slice(0, 200) : "",
+    }))
+    .sort((a, b) => b.start.localeCompare(a.start))
+  : [];
+  return { enabled: !!raw?.enabled, entries, reminder: !!raw?.reminder };
+}
+async function loadCycle() {
+  if (!user) return;
+  try {
+    const snap = await getDoc(userDocRef());
+    cycleData = sanitizeCycle(snap.exists() ? snap.data()?.cycle : null);
+  } catch { cycleData = { enabled: false, entries: [], reminder: false }; }
+  renderCycle();
+  maybeCycleReminder();
+}
+async function saveCycle() {
+  if (!user) return false;
+  try {
+    await setDoc(userDocRef(), { cycle: cycleData, updatedAt: serverTimestamp() }, { merge: true });
+    return true;
+  } catch { toast("Couldn't save cycle data. Please try again.", "err"); return false; }
+}
+function cycleDaySpan(a, b) { return Math.max(1, Math.round((parseKey(b) - parseKey(a)) / DAY_MS) + 1); }
+function cycleStats() {
+  const starts = cycleData.entries.map((e) => e.start).sort();
+  const deltas = [];
+  for (let i = 1; i < starts.length; i++) {
+    const d = Math.round((parseKey(starts[i]) - parseKey(starts[i - 1])) / DAY_MS);
+    if (d >= 15 && d <= 60) deltas.push(d);
+  }
+  const avg = deltas.length ? Math.round(deltas.reduce((a, b) => a + b, 0) / deltas.length) : null;
+  const last = starts.length ? starts[starts.length - 1] : null;
+  let next = null, nextEnd = null;
+  if (avg && deltas.length >= 2 && last) {
+    const nd = addDays(parseKey(last), avg);
+    next = toKey(nd);
+    nextEnd = toKey(addDays(nd, 2));
+  }
+  return { count: cycleData.entries.length, last, avg, deltas: deltas.length, next, nextEnd };
+}
+function renderCycle() {
+  if (!$("cycleDisabled")) return;
+  $("cycleDisabled").hidden = cycleData.enabled;
+  $("cyclePanel").hidden = !cycleData.enabled;
+  if (!cycleData.enabled) return;
+  const st = cycleStats();
+  $("cycLast").textContent = st.last || "\u2014";
+  $("cycLastSub").textContent = st.last ? "Most recent start date" : "No entries yet";
+  $("cycAvg").textContent = st.avg ? `${st.avg} d` : "\u2014";
+  $("cycAvgSub").textContent = st.deltas ? `from ${st.deltas} recorded cycle${st.deltas === 1 ? "" : "s"}` : "Needs 2+ recorded starts";
+  $("cycNext").textContent = st.next || "\u2014";
+  $("cycNextSub").textContent = st.next ? `${st.next} \u00b12 days (estimate)` : "Not enough data yet";
+  $("cycCount").textContent = String(st.count);
+  if ($("cycleReminderChk")) $("cycleReminderChk").checked = !!cycleData.reminder;
+  $("cycleHistory").innerHTML = st.count === 0
+    ? `<p class="muted small">No entries yet. Record a period above to start building history.</p>`
+    : cycleData.entries.map((e) => `
+      <div class="cycle-entry">
+        <div class="ce-main">
+          <div class="ce-dates"><strong>${esc(e.start)}</strong>${e.end ? ` <span aria-hidden="true">\u2192</span> ${esc(e.end)} <span class="pill">${cycleDaySpan(e.start, e.end)} days</span>` : ` <span class="pill">No end date</span>`}</div>
+          ${e.symptoms.length ? `<div class="ce-sym">${e.symptoms.map((s) => `<span class="pill">${esc(s)}</span>`).join("")}</div>` : ""}
+          ${e.note ? `<p class="ce-note muted small">${esc(e.note)}</p>` : ""}
+        </div>
+        <div class="ce-actions">
+          <button class="act-btn" type="button" data-cyc-edit="${esc(e.id)}" aria-label="Edit entry starting ${esc(e.start)}" title="Edit"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg></button>
+          <button class="act-btn danger" type="button" data-cyc-del="${esc(e.id)}" aria-label="Delete entry starting ${esc(e.start)}" title="Delete"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></button>
+        </div>
+      </div>`).join("");
+}
+function maybeCycleReminder() {
+  if (!user || !cycleData.enabled || !cycleData.reminder) return;
+  const st = cycleStats();
+  if (!st.next) return;
+  const key = `pht_cyc_rem_${user.uid}_${st.next}`;
+  if (localStorage.getItem(key)) return;
+  const today = todayKey();
+  if (today >= st.next && today <= (st.nextEnd || st.next)) {
+    localStorage.setItem(key, "1");
+    toast("Cycle Tracker reminder");
+  }
+}
+function cycleFieldErr(inputId, errId, msg) {
+  const el = $(errId);
+  el.textContent = msg || ""; el.hidden = !msg;
+  if (msg) $(inputId).setAttribute("aria-invalid", "true"); else $(inputId).removeAttribute("aria-invalid");
+}
+function resetCycleForm() {
+  $("cycleFormTitle").textContent = "Record a period";
+  $("cycId").value = ""; $("cycStart").value = ""; $("cycEnd").value = ""; $("cycNote").value = "";
+  document.querySelectorAll("#cycSymptoms input").forEach((i) => { i.checked = false; });
+  $("cycCancelEdit").hidden = true;
+  cycleFieldErr("cycStart", "cycStartErr", "");
+  cycleFieldErr("cycEnd", "cycEndErr", "");
+}
+async function saveCycleEntry(e) {
+  e?.preventDefault();
+  if (!user || cycSaving) return;
+  const start = $("cycStart").value, end = $("cycEnd").value || null;
+  cycleFieldErr("cycStart", "cycStartErr", "");
+  cycleFieldErr("cycEnd", "cycEndErr", "");
+  if (!isKey(start)) { cycleFieldErr("cycStart", "cycStartErr", "Pick the first day of the period."); $("cycStart").focus(); return; }
+  if (start > todayKey()) { cycleFieldErr("cycStart", "cycStartErr", "The first day can't be in the future."); $("cycStart").focus(); return; }
+  if (end) {
+    if (!isKey(end)) { cycleFieldErr("cycEnd", "cycEndErr", "Enter a valid date or leave it empty."); return; }
+    if (end < start) { cycleFieldErr("cycEnd", "cycEndErr", "The last day can't be before the first day."); return; }
+    if (end > todayKey()) { cycleFieldErr("cycEnd", "cycEndErr", "The last day can't be in the future."); return; }
+  }
+  const editing = $("cycId").value;
+  if (cycleData.entries.some((x) => x.start === start && x.id !== editing)) {
+    cycleFieldErr("cycStart", "cycStartErr", "An entry with this start date already exists — edit it instead.");
+    return;
+  }
+  const symptoms = [...document.querySelectorAll("#cycSymptoms input:checked")].map((i) => i.value);
+  const note = $("cycNote").value.trim().slice(0, 200);
+  const id = editing || `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const entry = { id, start, end, symptoms, note };
+  const prev = cycleData;
+  cycleData = { ...cycleData, entries: editing ? cycleData.entries.map((x) => (x.id === editing ? entry : x)) : [...cycleData.entries, entry] };
+  cycSaving = true;
+  const btn = $("cycSaveBtn"); btn.disabled = true; btn.classList.add("loading");
+  const okSave = await saveCycle();
+  cycSaving = false; btn.disabled = false; btn.classList.remove("loading");
+  if (!okSave) { cycleData = prev; return; }
+  resetCycleForm();
+  renderCycle();
+  toast(editing ? "Entry updated." : "Entry saved.", "ok");
+}
+let cycSaving = false;
+function cycleEdit(id) {
+  const en = cycleData.entries.find((x) => x.id === id);
+  if (!en) return;
+  $("cycleFormTitle").textContent = "Edit entry";
+  $("cycId").value = en.id; $("cycStart").value = en.start; $("cycEnd").value = en.end || ""; $("cycNote").value = en.note || "";
+  document.querySelectorAll("#cycSymptoms input").forEach((i) => { i.checked = en.symptoms.includes(i.value); });
+  $("cycCancelEdit").hidden = false;
+  $("cycStart").focus();
+}
+async function cycleDelete(id) {
+  const en = cycleData.entries.find((x) => x.id === id);
+  if (!en) return;
+  const ok = await askConfirm(`Delete the entry starting ${en.start}? This cannot be undone.`);
+  if (!ok) return;
+  const prev = cycleData;
+  cycleData = { ...cycleData, entries: cycleData.entries.filter((x) => x.id !== id) };
+  if (!(await saveCycle())) { cycleData = prev; return; }
+  if ($("cycId").value === id) resetCycleForm();
+  renderCycle();
+  toast("Entry deleted.");
+}
+async function cycleEnable() {
+  cycleData = { ...cycleData, enabled: true };
+  if (!(await saveCycle())) { cycleData = { ...cycleData, enabled: false }; return; }
+  renderCycle();
+  toast("Cycle tracking enabled. Your data stays private to your account.", "ok");
+}
+async function cycleDisable() {
+  const ok = await askConfirm("Turn off cycle tracking? Your entries are kept and will reappear if you enable it again.", "Turn off");
+  if (!ok) return;
+  cycleData = { ...cycleData, enabled: false };
+  if (!(await saveCycle())) { cycleData = { ...cycleData, enabled: true }; return; }
+  resetCycleForm();
+  renderCycle();
+  toast("Cycle tracking turned off.");
+}
+async function cycleDeleteAll() {
+  const ok = await askConfirm("Delete ALL cycle data? Every recorded period will be removed. This cannot be undone.", "Delete all");
+  if (!ok) return;
+  const prev = cycleData;
+  cycleData = { ...cycleData, entries: [] };
+  if (!(await saveCycle())) { cycleData = prev; return; }
+  resetCycleForm();
+  renderCycle();
+  toast("All cycle data deleted.");
+}
+
+/* ================= Location (one-shot, never stored) ================= */
+function locStatus(msg, kind) {
+  const el = $("locStatus");
+  el.textContent = msg;
+  el.className = `loc-status small${kind ? " " + kind : ""}`;
+}
+let locInFlight = false;
+function requestLocation() {
+  const btn = $("locBtn"), retry = $("locRetryBtn"), help = $("locHelp"), coords = $("locCoords");
+  if (locInFlight) return;
+  help.hidden = true; coords.hidden = true;
+  if (!("geolocation" in navigator)) {
+    locStatus("This browser doesn't support location.", "err");
+    help.hidden = false;
+    help.textContent = "Try a current version of Chrome, Edge, Firefox or Safari on this device.";
+    retry.hidden = true;
+    return;
+  }
+  locInFlight = true;
+  btn.disabled = true; btn.classList.add("loading");
+  retry.disabled = true;
+  locStatus("Getting your location\u2026", "muted");
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      locInFlight = false;
+      btn.disabled = false; btn.classList.remove("loading");
+      retry.disabled = false;
+      const { latitude, longitude, accuracy } = pos.coords;
+      locStatus("Location obtained. This one-off result is not saved or sent anywhere.", "ok");
+      coords.hidden = false;
+      coords.textContent = `${latitude.toFixed(4)}\u00b0, ${longitude.toFixed(4)}\u00b0  \u00b7  \u00b1${Math.round(accuracy)} m accuracy`;
+      retry.hidden = false;
+    },
+    (err) => {
+      locInFlight = false;
+      btn.disabled = false; btn.classList.remove("loading");
+      retry.disabled = false;
+      retry.hidden = false;
+      if (err.code === 1) {
+        locStatus("Permission denied.", "err");
+        help.hidden = false;
+        help.textContent = "Allow location for this site via the lock icon in the address bar (or browser Settings \u2192 Privacy \u2192 Location), then retry.";
+      } else if (err.code === 2) {
+        locStatus("Position unavailable right now.", "err");
+        help.hidden = false;
+        help.textContent = "Turn on device location services (and move outdoors if possible), then retry.";
+      } else {
+        locStatus("Request timed out.", "err");
+        help.hidden = false;
+        help.textContent = "The browser took too long to answer. Retry when you have a clearer signal.";
+      }
+    },
+    { enableHighAccuracy: false, timeout: 10000, maximumAge: 0 }
+  );
+}
 
 /* ================= Reminders ================= */
 const reminderKey = () => `pht_reminders_${user?.uid || "anon"}`;
@@ -496,6 +1069,7 @@ function go(view) {
   });
   $("topbarTitle").textContent = view[0].toUpperCase() + view.slice(1);
   $("appShell").querySelector(".sidebar").classList.remove("open");
+  $("navScrim").hidden = true;
   $("menuBtn").setAttribute("aria-expanded", "false");
 }
 
@@ -515,21 +1089,60 @@ function bind() {
     } catch (err) { console.error(err); authErr(friendlyErr(err)); }
     finally { $("authSubmit").disabled = false; }
   });
+  let googleSigningIn = false;
   $("googleBtn").onclick = async () => {
+    if (googleSigningIn) return;
+    googleSigningIn = true;
+    $("googleBtn").disabled = true;
     authErr(null);
     try { await signInWithPopup(auth, googleProvider); }
     catch (err) { console.error(err); authErr(err?.code === "auth/popup-closed-by-user" ? "Google sign-in was closed before completing." : friendlyErr(err)); }
+    finally { googleSigningIn = false; $("googleBtn").disabled = false; }
   };
-  $("logoutBtn").onclick = () => signOut(auth);
+  $("logoutBtn").onclick = () => confirmLogout();
+  $("accountBtn").onclick = () => {
+    if (!user) return;
+    renderAccountInfo(user);
+    $("acctError").hidden = true;
+    $("acctNameErr").hidden = true; $("acctNameOk").hidden = true;
+    openModal("accountModal", { focus: "#acctNameInput" });
+  };
+  $("acctLogoutBtn").onclick = () => confirmLogout();
+  $("acctNameForm").addEventListener("submit", saveProfileName);
+  $("acctCancelBtn").onclick = () => {
+    if (!user) return;
+    $("acctNameInput").value = user.displayName || "";
+    $("acctNameErr").hidden = true; $("acctNameOk").hidden = true;
+    $("acctNameInput").removeAttribute("aria-invalid");
+  };
+  $("cycleEnableBtn").onclick = () => cycleEnable();
+  $("cycleDisableBtn").onclick = () => cycleDisable();
+  $("cycleDeleteAllBtn").onclick = () => cycleDeleteAll();
+  $("cycleForm").addEventListener("submit", saveCycleEntry);
+  $("cycCancelEdit").onclick = () => resetCycleForm();
+  $("cycleHistory").addEventListener("click", (e) => {
+    const ed = e.target.closest("[data-cyc-edit]");
+    if (ed) { cycleEdit(ed.dataset.cycEdit); return; }
+    const del = e.target.closest("[data-cyc-del]");
+    if (del) cycleDelete(del.dataset.cycDel);
+  });
+  if ($("cycleReminderChk")) $("cycleReminderChk").onchange = async (e) => {
+    cycleData = { ...cycleData, reminder: e.target.checked };
+    if (!(await saveCycle())) { cycleData = { ...cycleData, reminder: !e.target.checked }; e.target.checked = !e.target.checked; }
+  };
+  $("locBtn").onclick = () => requestLocation();
+  $("locRetryBtn").onclick = () => requestLocation();
   document.querySelectorAll(".nav-item").forEach((b) => { b.onclick = () => go(b.dataset.nav); });
-  $("menuBtn").onclick = () => {
-    const s = document.querySelector(".sidebar");
-    const open = s.classList.toggle("open");
+  const setNav = (open) => {
+    document.querySelector(".sidebar").classList.toggle("open", open);
+    $("navScrim").hidden = !open;
     $("menuBtn").setAttribute("aria-expanded", String(open));
   };
-  $("addHabitBtn").onclick = () => openHabitModal();
-  $("addHabitTopBtn").onclick = () => openHabitModal();
-  $("cancelHabitBtn").onclick = closeHabitModal;
+  $("menuBtn").onclick = () => setNav($("navScrim").hidden);
+  $("navScrim").onclick = () => setNav(false);
+  $("addHabitBtn").onclick = (e) => openHabitModal(null, e.currentTarget);
+  $("addHabitTopBtn").onclick = (e) => openHabitModal(null, e.currentTarget);
+  $("cancelHabitBtn").onclick = () => closeHabitModal();
   $("habitForm").addEventListener("submit", saveHabit);
   $("fFreq").onchange = () => { $("customDays").hidden = $("fFreq").value !== "custom"; };
   $("colorSwatches").addEventListener("click", (e) => {
@@ -545,27 +1158,58 @@ function bind() {
     renderDayDetail();
   });
   document.addEventListener("click", async (e) => {
+    const add = e.target.closest("[data-add-habit]");
+    if (add) { e.stopPropagation(); openHabitModal(null, add); return; }
+    const cm = e.target.closest("[data-close-modal]");
+    if (cm) {
+      e.stopPropagation();
+      if (cm.dataset.closeModal === "habitModal") closeHabitModal();
+      else closeModal(cm.dataset.closeModal);
+      return;
+    }
     const t = e.target.closest("[data-toggle]");
     if (t) { e.stopPropagation(); await toggleDone(t.dataset.toggle); return; }
     const ed = e.target.closest("[data-edit]");
-    if (ed) { e.stopPropagation(); const h = habits.find((x) => x.id === ed.dataset.edit); openHabitModal(h); return; }
+    if (ed) { e.stopPropagation(); const h = habits.find((x) => x.id === ed.dataset.edit); openHabitModal(h, ed); return; }
     const del = e.target.closest("[data-del]");
     if (del) { e.stopPropagation(); await removeHabit(del.dataset.del); return; }
     const op = e.target.closest("[data-open]");
-    if (op) { openDetail(op.dataset.open); return; }
+    if (op) { openDetail(op.dataset.open, op); return; }
     const ob = e.target.closest("[data-open-btn]");
-    if (ob) { e.stopPropagation(); openDetail(ob.dataset.openBtn); return; }
+    if (ob) { e.stopPropagation(); openDetail(ob.dataset.openBtn, ob); return; }
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && e.target.matches?.('[data-open]')) openDetail(e.target.dataset.open);
-    if (e.key === "Escape") { closeHabitModal(); closeDetail(); $("confirmModal").hidden = true; }
+    if (e.key === "Tab") {
+      // trap Tab/Shift+Tab within the topmost open modal
+      const frame = topModalFrame();
+      if (!frame) return;
+      const modal = $(frame.id);
+      const items = focusablesIn(modal);
+      if (!items.length) { e.preventDefault(); return; }
+      const first = items[0], last = items[items.length - 1];
+      const active = document.activeElement;
+      if (!modal.contains(active)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return; }
+      if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); return; }
+      if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); return; }
+      return;
+    }
+    if (e.key === "Escape") {
+      if (!$("navScrim").hidden) { document.querySelector(".sidebar").classList.remove("open"); $("navScrim").hidden = true; $("menuBtn").setAttribute("aria-expanded", "false"); return; }
+      // close only the topmost layer — never hide a confirm the habit dirty-check just opened
+      const frame = topModalFrame();
+      if (!frame) return;
+      if (frame.id === "confirmModal") { closeModal("confirmModal"); confirmResolve?.(false); return; }
+      if (frame.id === "accountModal") { closeModal("accountModal"); return; }
+      if (frame.id === "habitModal") { closeHabitModal(); return; }
+      if (frame.id === "detailModal") { closeDetail(); return; }
+    }
   });
   $("closeDetailBtn").onclick = closeDetail;
   $("detailEditBtn").onclick = () => { const h = habits.find((x) => x.id === detailId); closeDetail(); openHabitModal(h); };
   $("detailDeleteBtn").onclick = () => removeHabit(detailId);
   $("detailToggleBtn").onclick = async () => { await toggleDone(detailId); };
-  $("confirmCancel").onclick = () => { $("confirmModal").hidden = true; confirmResolve?.(false); };
-  $("confirmOk").onclick = () => { $("confirmModal").hidden = true; confirmResolve?.(true); };
+  $("confirmCancel").onclick = () => { closeModal("confirmModal"); confirmResolve?.(false); };
+  $("confirmOk").onclick = () => { closeModal("confirmModal"); confirmResolve?.(true); };
   const setTheme = (m) => { localStorage.setItem("pht_theme", m); applyTheme(m); };
   $("themeSelect").onchange = (e) => setTheme(e.target.value);
   $("themeToggle").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
@@ -585,18 +1229,36 @@ function bind() {
     else toast("Notifications blocked — in-app reminders will still appear.", "err");
     updateNotifStatus();
   };
-  ["habitModal", "detailModal", "confirmModal"].forEach((id) => {
+  ["habitModal", "detailModal", "confirmModal", "accountModal"].forEach((id) => {
     $(id).addEventListener("click", (e) => {
-      if (e.target.id === id) { $(id).hidden = true; if (id === "confirmModal") confirmResolve?.(false); if (id === "detailModal") detailId = null; }
+      if (e.target.id === id) {
+        if (id === "habitModal") closeHabitModal();
+        else if (id === "detailModal") closeDetail();
+        else { closeModal(id); if (id === "confirmModal") confirmResolve?.(false); }
+      }
     });
   });
 }
 
 /* ================= Boot ================= */
+function setAuthState(state) {
+  $("authLoading").hidden = state !== "loading";
+  $("authView").hidden = state !== "auth";
+  $("appShell").hidden = state !== "app";
+}
+let snapTimer = null;
 function subscribe() {
   unsub?.();
+  clearTimeout(snapTimer);
   $("loadingBar").hidden = false;
+  showError(null);
+  const waitMs = (typeof window !== "undefined" && window.__PHT_SNAP_TIMEOUT) || 12000;
+  snapTimer = setTimeout(() => {
+    $("loadingBar").hidden = true;
+    showError("Still waiting for your habits. Check your connection \u2014 they will appear automatically when data arrives.");
+  }, waitMs);
   unsub = onSnapshot(habitsCol(), (snap) => {
+    clearTimeout(snapTimer);
     habits = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     // Backfill safety: old docs used lastDone/streak without completions
     habits = habits.map((h) => ({ completions: [], ...h }));
@@ -604,23 +1266,64 @@ function subscribe() {
     showError(null);
     renderAll();
   }, (err) => {
+    clearTimeout(snapTimer);
     console.error(err);
     $("loadingBar").hidden = true;
     showError(friendlyErr(err) + " (Check Firestore rules: users/{uid}/habits must allow your own uid.)");
   });
 }
-onAuthStateChanged(auth, (u) => {
+function handleAuth(u) {
   user = u;
-  const logged = !!u;
-  $("authView").hidden = logged;
-  $("appShell").hidden = !logged;
-  if (logged) {
-    $("userEmail").textContent = u.email || "Account";
+  if (u) {
+    setAuthState("app");
+    renderAccountInfo(u);
     subscribe(); go("dashboard");
+    loadCycle();
   } else {
-    unsub?.(); habits = []; detailId = null;
+    unsub?.(); clearTimeout(snapTimer); habits = []; detailId = null;
+    cycleData = { enabled: false, entries: [], reminder: false };
+    $("loadingBar").hidden = true;
+    showError(null); authErr(null);
+    for (const m of ["accountModal", "habitModal", "detailModal", "confirmModal"]) { const el = $(m); if (el) el.hidden = true; }
+    modalStack.length = 0;
+    confirmResolve?.(false); confirmResolve = null;
+    habitSnap = null;
+    $("userName").textContent = "Account";
+    if ($("userEmail")) $("userEmail").textContent = "\u2014";
+    const av = $("userAvatar");
+    if (av) { av.textContent = "?"; av.querySelector("img")?.remove(); }
+    if ($("settingsName")) $("settingsName").textContent = "\u2014";
+    if ($("settingsEmail")) $("settingsEmail").textContent = "\u2014";
+    if ($("acctNameInput")) { $("acctNameInput").value = ""; $("acctNameErr").hidden = true; $("acctNameOk").hidden = true; }
+    renderCycle();
+    document.querySelector(".sidebar")?.classList.remove("open");
+    $("navScrim").hidden = true;
+    setAuthState("auth");
+    setTimeout(() => { try { $("authEmail")?.focus(); } catch { /* ignore */ } }, 0);
   }
-});
+}
+function handleAuthError(err) {
+  console.error(err);
+  unsub?.(); clearTimeout(snapTimer); user = null; habits = []; detailId = null;
+  $("loadingBar").hidden = true;
+  setAuthState("auth");
+  authErr("We couldn\u2019t verify your sign-in state (" + (err?.code || err?.message || "unknown error") + "). Please log in again.");
+}
+if (typeof window !== "undefined") {
+  // keep at most one auth listener even if boot code ever ran twice
+  window.__phtAuthUnsub?.();
+  window.__phtAuthUnsub = onAuthStateChanged(auth, handleAuth, handleAuthError);
+} else {
+  onAuthStateChanged(auth, handleAuth, handleAuthError);
+}
 applyTheme(themeStore);
 setAuthMode("login");
 bind();
+
+// Re-render when the calendar day rolls over (stale "today" after midnight).
+let _lastDayKey = todayKey();
+const _dayCheckMs = () => (typeof window !== "undefined" && window.__PHT_DAY_CHECK_MS) || 30000;
+let _dayTimer = setInterval(() => {
+  const k = todayKey();
+  if (k !== _lastDayKey) { _lastDayKey = k; if (user) renderAll(); }
+}, _dayCheckMs());
