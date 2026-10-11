@@ -880,18 +880,23 @@ async function loadCycle() {
   renderCycle();
 }
 async function saveCycle() {
-  if (!user) return false;
+  if (!user) return "failed";
   const p = setDoc(userDocRef(), { cycle: cycleData, updatedAt: serverTimestamp() }, { merge: true });
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
     // Offline: latency compensation already applied the local change. Keep it
     // and let Firestore sync it when connectivity returns (don't hang the UI
-    // or make callers revert). Surface any later failure loudly.
+    // or make callers revert). Surface any later failure loudly. No custom
+    // queue is introduced — Firestore's own offline queue persists the write.
     p.catch((err) => { console.error(err); toast("Cycle changes couldn't sync. " + friendlyErr(err), "err"); });
-    return true; // stored on this device, queued to sync
+    return "queued"; // accepted on this device, not yet confirmed on the backend
   }
-  try { await p; return true; }
-  catch { toast("Couldn't save cycle data. Please try again.", "err"); return false; }
+  try { await p; return "synced"; }
+  catch { toast("Couldn't save cycle data. Please try again.", "err"); return "failed"; }
 }
+// Accurate wording suffix for a write accepted while offline: it is stored on
+// this device and queued, not yet confirmed in the cloud. Empty when synced so
+// online saves keep their original, accurate wording.
+const cycleOfflineNote = (status) => status === "queued" ? " (saved on this device \u2014 it will sync when you're back online)" : "";
 function cycleDaySpan(a, b) { return Math.max(1, Math.round((parseKey(b) - parseKey(a)) / DAY_MS) + 1); }
 function cycleStats() {
   const starts = cycleData.entries.map((e) => e.start).sort();
@@ -967,10 +972,16 @@ function evaluateCycleReminder() {
   if (localStorage.getItem(key)) return; // one reminder per prediction
   localStorage.setItem(key, "1");
   // Discreet, privacy-conscious wording: no dates or specifics in the alert.
+  // Exactly one alert per logical reminder: a browser notification when
+  // permitted, otherwise an in-app toast (never both). The previous code fired
+  // a notification and then an unconditional toast, double-alerting the user
+  // whenever permission was granted.
+  const body = "A tracked date is coming up soon. Open Pro Habit Tracker for details.";
   if ("Notification" in window && Notification.permission === "granted") {
-    try { new Notification("Cycle reminder", { body: "A tracked date is coming up soon. Open Pro Habit Tracker for details." }); } catch { /* fall back to in-app notice */ }
+    try { new Notification("Cycle reminder", { body }); } catch { toast("Cycle reminder: an estimated date is coming up soon."); }
+  } else {
+    toast("Cycle reminder: an estimated date is coming up soon.");
   }
-  toast("Cycle reminder: an estimated date is coming up soon.");
 }
 function cycleFieldErr(inputId, errId, msg) {
   const el = $(errId);
@@ -1011,12 +1022,12 @@ async function saveCycleEntry(e) {
   cycleData = { ...cycleData, entries: editing ? cycleData.entries.map((x) => (x.id === editing ? entry : x)) : [...cycleData.entries, entry] };
   cycSaving = true;
   const btn = $("cycSaveBtn"); btn.disabled = true; btn.classList.add("loading");
-  const okSave = await saveCycle();
+  const status = await saveCycle();
   cycSaving = false; btn.disabled = false; btn.classList.remove("loading");
-  if (!okSave) { cycleData = prev; return; }
+  if (status === "failed") { cycleData = prev; return; }
   resetCycleForm();
   renderCycle();
-  toast(editing ? "Entry updated." : "Entry saved.", "ok");
+  toast((editing ? "Entry updated." : "Entry saved.") + cycleOfflineNote(status), "ok");
 }
 let cycSaving = false;
 function cycleEdit(id) {
@@ -1035,35 +1046,39 @@ async function cycleDelete(id) {
   if (!ok) return;
   const prev = cycleData;
   cycleData = { ...cycleData, entries: cycleData.entries.filter((x) => x.id !== id) };
-  if (!(await saveCycle())) { cycleData = prev; return; }
+  const status = await saveCycle();
+  if (status === "failed") { cycleData = prev; return; }
   if ($("cycId").value === id) resetCycleForm();
   renderCycle();
-  toast("Entry deleted.");
+  toast("Entry deleted." + cycleOfflineNote(status));
 }
 async function cycleEnable() {
   cycleData = { ...cycleData, enabled: true };
-  if (!(await saveCycle())) { cycleData = { ...cycleData, enabled: false }; return; }
+  const status = await saveCycle();
+  if (status === "failed") { cycleData = { ...cycleData, enabled: false }; return; }
   renderCycle();
-  toast("Cycle tracking enabled. Your data stays private to your account.", "ok");
+  toast("Cycle tracking enabled. Your data stays private to your account." + cycleOfflineNote(status), "ok");
 }
 async function cycleDisable() {
   const ok = await askConfirm("Turn off cycle tracking? Your entries are kept and will reappear if you enable it again.", "Turn off");
   if (!ok) return;
   cycleData = { ...cycleData, enabled: false };
-  if (!(await saveCycle())) { cycleData = { ...cycleData, enabled: true }; return; }
+  const status = await saveCycle();
+  if (status === "failed") { cycleData = { ...cycleData, enabled: true }; return; }
   resetCycleForm();
   renderCycle();
-  toast("Cycle tracking turned off.");
+  toast("Cycle tracking turned off." + cycleOfflineNote(status));
 }
 async function cycleDeleteAll() {
   const ok = await askConfirm("Delete ALL cycle data? Every recorded period will be removed. This cannot be undone.", "Delete all");
   if (!ok) return;
   const prev = cycleData;
   cycleData = { ...cycleData, entries: [] };
-  if (!(await saveCycle())) { cycleData = prev; return; }
+  const status = await saveCycle();
+  if (status === "failed") { cycleData = prev; return; }
   resetCycleForm();
   renderCycle();
-  toast("All cycle data deleted.");
+  toast("All cycle data deleted." + cycleOfflineNote(status));
 }
 
 /* ================= Location (one-shot, never stored) ================= */
@@ -1256,14 +1271,15 @@ function bind() {
       try { await Notification.requestPermission(); } catch { /* ignore */ }
       updateNotifStatus();
     }
-    if (!(await saveCycle())) { cycleData = { ...cycleData, reminder: !e.target.checked }; e.target.checked = !e.target.checked; }
+    if ((await saveCycle()) === "failed") { cycleData = { ...cycleData, reminder: !e.target.checked }; e.target.checked = !e.target.checked; }
     if ($("cycleLead")) $("cycleLead").disabled = !cycleData.reminder;
     evaluateCycleReminder();
   };
   if ($("cycleLead")) $("cycleLead").onchange = async (e) => {
     const n = Number(e.target.value);
     cycleData = { ...cycleData, lead: Number.isFinite(n) ? Math.min(14, Math.max(0, Math.round(n))) : 3 };
-    if (!(await saveCycle())) { renderCycle(); return; }
+    const status = await saveCycle();
+    if (status === "failed") { renderCycle(); return; }
     evaluateCycleReminder();
   };
   $("locBtn").onclick = () => requestLocation();
@@ -1493,5 +1509,6 @@ if (typeof window !== "undefined" && window.__PHT_TEST__) {
   Object.assign(window.__PHT_TEST__, {
     settleWrite, checkHabitReminder, evaluateCycleReminder,
     pruneFiredReminderKeys, cycleRemindKey, firedKey, paintSyncChip,
+    saveCycle, cycleOfflineNote,
   });
 }
