@@ -138,6 +138,7 @@
         <button id="menuBtn" class="icon-btn menu-btn" aria-label="Open navigation" aria-expanded="false" type="button"><svg class="ic"><use href="#i-menu"/></svg></button>
         <div class="topbar-title" id="topbarTitle">Dashboard</div>
         <div class="topbar-actions">
+          <div id="syncChip" class="sync-chip" role="status" aria-live="polite" hidden></div>
           <button id="themeToggle" class="btn sm ghost" aria-pressed="false" type="button"><svg class="ic"><use href="#i-moon"/></svg> <span class="tlabel">Dark mode</span></button>
           <button id="addHabitTopBtn" class="btn primary sm" type="button"><svg class="ic ic-sm"><use href="#i-plus"/></svg> New habit</button>
         </div>
@@ -376,7 +377,15 @@
             <div class="card" style="margin-top:16px">
               <h3>Privacy &amp; data</h3>
               <p class="card-sub">Cycle records are stored with your account data under <code>users/{uid}</code> and are readable only by you (existing Firestore security rules). They are never sent to AI services or analytics.</p>
-              <label class="check" style="margin-top:14px" for="cycleReminderChk"><input id="cycleReminderChk" type="checkbox"> Discreet in-app reminder during the expected window (a plain toast — no system notification)</label>
+              <label class="check" style="margin-top:14px" for="cycleReminderChk"><input id="cycleReminderChk" type="checkbox"> Remind me before an estimated date (discreet; uses a system notification if you allow them, otherwise an in-app notice)</label>
+              <div class="row" style="gap:9px;margin-top:12px">
+                <label for="cycleLead" style="margin:0">Remind me this many days ahead</label>
+                <select id="cycleLead" style="width:auto;min-width:110px" disabled>
+                  <option value="0">Same day</option><option value="1">1 day</option><option value="2">2 days</option>
+                  <option value="3" selected>3 days</option><option value="5">5 days</option><option value="7">7 days</option>
+                </select>
+              </div>
+              <p class="muted small" style="margin-top:10px">The reminder uses the next-date estimate from your own recorded history (it is not a certainty or medical advice). It only appears while Pro Habit Tracker is open in this browser — a website cannot run after it is closed.</p>
               <div class="row" style="gap:9px;flex-wrap:wrap;margin-top:14px">
                 <button id="cycleDisableBtn" class="btn" type="button">Turn off cycle tracking</button>
                 <button id="cycleDeleteAllBtn" class="btn danger" type="button"><svg class="ic ic-sm"><use href="#i-trash"/></svg> Delete all cycle data</button>
@@ -414,6 +423,7 @@
               </div>
               <p class="muted small" id="notifStatus" style="margin-top:14px">Browser notifications: unknown.</p>
               <p class="muted small" style="margin-top:4px">If notifications are blocked, the app falls back to an in-app toast at the reminder time.</p>
+              <p class="muted small" style="margin-top:4px">Reminders run only while this page is open — close the tab and they pause (a website can't execute in the background). Habit and cycle data still work offline and sync when you reconnect.</p>
             </div>
           </div>
           <div class="card">

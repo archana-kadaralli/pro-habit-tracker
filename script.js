@@ -376,6 +376,58 @@ function authErr(msg) { const e = $("authError"); e.hidden = !msg; e.textContent
 const habitsCol = () => collection(db, "users", user.uid, "habits");
 const habitDoc = (id) => doc(db, "users", user.uid, "habits", id);
 
+/* ========= Sync status & offline-safe writes =========
+   Firestore offline persistence (see firebase.js) queues writes while offline
+   and replays them when connectivity returns. An awaited write promise only
+   resolves once the backend commits it, so awaiting a write while offline would
+   hang the UI. `settleWrite` reports honestly instead: when the device is
+   offline it does not wait for a cloud commit, tells the user the change is
+   stored on this device, and surfaces any later sync failure. The `#syncChip`
+   indicator is driven by online status + the count of in-flight writes, so the
+   user can always tell cached-on-device from confirmed-in-cloud. */
+const _sync = { el: null, pending: 0, offline: typeof navigator !== "undefined" && navigator.onLine === false };
+function paintSyncChip() {
+  const el = _sync.el || (_sync.el = $("syncChip"));
+  if (!el) return;
+  let text = "Synced", cls = "sync-chip ok";
+  if (_sync.offline) { text = "Offline — changes stay on this device"; cls = "sync-chip warn"; }
+  else if (_sync.pending > 0) { text = "Syncing…"; cls = "sync-chip busy"; }
+  el.className = cls;
+  el.textContent = text;
+  el.hidden = false;
+}
+function noteOnline() {
+  const off = typeof navigator !== "undefined" && navigator.onLine === false;
+  if (off !== _sync.offline) { _sync.offline = off; paintSyncChip(); }
+}
+if (typeof window !== "undefined") {
+  window.addEventListener("online", noteOnline);
+  window.addEventListener("offline", noteOnline);
+}
+async function settleWrite(promise, offlineMsg) {
+  _sync.pending++; paintSyncChip();
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    // Offline: don't await (would hang). The local change is already applied
+    // via latency compensation; Firestore will sync it later. Be honest now,
+    // and surface any later failure loudly.
+    toast(offlineMsg);
+    promise
+      .then(() => { _sync.pending = Math.max(0, _sync.pending - 1); paintSyncChip(); })
+      .catch((err) => {
+        console.error(err);
+        _sync.pending = Math.max(0, _sync.pending - 1); paintSyncChip();
+        toast("A change saved on this device couldn't sync. " + friendlyErr(err), "err");
+      });
+    return false; // stored on this device, not yet confirmed by the server
+  }
+  try {
+    await promise; // resolves only once the backend commits it
+    return true; // confirmed in the cloud
+  } finally {
+    _sync.pending = Math.max(0, _sync.pending - 1); paintSyncChip();
+  }
+}
+
 /* ================= CRUD ================= */
 let habitSaving = false;
 async function saveHabit(e) {
@@ -401,12 +453,18 @@ async function saveHabit(e) {
     habitSaving = true;
     $("saveHabitBtn").disabled = true;
     $("saveHabitBtn").classList.add("loading");
-    if (id) { await updateDoc(habitDoc(id), payload); toast("Habit updated."); }
-    else {
-      await addDoc(habitsCol(), { ...payload, completions: [], createdAt: serverTimestamp() });
-      // ensure profile doc exists
-      await setDoc(doc(db, "users", user.uid), { email: user.email || "", updatedAt: serverTimestamp() }, { merge: true });
-      toast("Habit created. Good luck!", "ok");
+    const OFF = "Saved on this device — it will sync when you're back online.";
+    if (id) {
+      const committed = await settleWrite(updateDoc(habitDoc(id), payload), OFF);
+      if (committed) toast("Habit updated.");
+    } else {
+      const committed = await settleWrite(
+        addDoc(habitsCol(), { ...payload, completions: [], createdAt: serverTimestamp() }), OFF);
+      // ensure profile doc exists (best-effort; non-blocking if offline)
+      const prof = setDoc(doc(db, "users", user.uid), { email: user.email || "", updatedAt: serverTimestamp() }, { merge: true });
+      if (typeof navigator !== "undefined" && navigator.onLine === false) prof.catch(() => {});
+      else { try { await prof; } catch { /* non-critical */ } }
+      if (committed) toast("Habit created. Good luck!", "ok");
     }
     closeHabitModal(true);
   } catch (err) { console.error(err); formErr(friendlyErr(err)); }
@@ -417,20 +475,24 @@ async function toggleDone(id, dateKey = todayKey()) {
   const h = habits.find((x) => x.id === id);
   if (!h) return;
   if (!isScheduled(h, dateKey)) { toast("This habit isn't scheduled for that day."); return; }
+  const has = (h.completions || []).includes(dateKey);
   try {
-    const has = (h.completions || []).includes(dateKey);
-    await updateDoc(habitDoc(id), {
+    const committed = await settleWrite(updateDoc(habitDoc(id), {
       completions: has ? arrayRemove(dateKey) : arrayUnion(dateKey),
       updatedAt: serverTimestamp(),
-    });
-    if (!has && dateKey === todayKey()) toast(`"${h.name}" completed!`, "ok");
+    }), "Saved on this device — it will sync when you're back online.");
+    if (committed && !has && dateKey === todayKey()) toast(`"${h.name}" completed!`, "ok");
   } catch (err) { console.error(err); toast(friendlyErr(err), "err"); }
 }
 async function removeHabit(id) {
   const h = habits.find((x) => x.id === id);
   const ok = await askConfirm(`Delete "${h?.name ?? "this habit"}" and its full history? This cannot be undone.`);
   if (!ok) return;
-  try { await deleteDoc(habitDoc(id)); toast("Habit deleted."); if (detailId === id) closeDetail(); }
+  try {
+    const committed = await settleWrite(deleteDoc(habitDoc(id)), "Deleted on this device — it will sync when you're back online.");
+    if (committed) toast("Habit deleted.");
+    if (detailId === id) closeDetail();
+  }
   catch (err) { console.error(err); toast(friendlyErr(err), "err"); }
 }
 function friendlyErr(err) {
@@ -787,7 +849,7 @@ async function closeHabitModal(force = false) {
 }
 
 /* ================= Cycle Tracker (optional, private, per-user) ================= */
-let cycleData = { enabled: false, entries: [], reminder: false };
+let cycleData = { enabled: false, entries: [], reminder: false, lead: 3 };
 const CYC_SYMPTOMS = ["Cramps", "Headache", "Fatigue", "Bloating", "Mood changes", "Other"];
 const isKey = (k) => typeof k === "string" && /^\d{4}-\d{2}-\d{2}$/.test(k);
 const userDocRef = () => doc(db, "users", user.uid);
@@ -803,23 +865,32 @@ function sanitizeCycle(raw) {
     }))
     .sort((a, b) => b.start.localeCompare(a.start))
   : [];
-  return { enabled: !!raw?.enabled, entries, reminder: !!raw?.reminder };
+  const leadRaw = Number(raw?.lead);
+  const lead = Number.isFinite(leadRaw) ? Math.min(14, Math.max(0, Math.round(leadRaw))) : 3;
+  return { enabled: !!raw?.enabled, entries, reminder: !!raw?.reminder, lead };
 }
 async function loadCycle() {
   if (!user) return;
   try {
+    // With offline persistence enabled, getDoc returns the cached doc when
+    // offline (it only errors if the doc was never cached on this device).
     const snap = await getDoc(userDocRef());
     cycleData = sanitizeCycle(snap.exists() ? snap.data()?.cycle : null);
-  } catch { cycleData = { enabled: false, entries: [], reminder: false }; }
+  } catch { cycleData = { enabled: false, entries: [], reminder: false, lead: 3 }; }
   renderCycle();
-  maybeCycleReminder();
 }
 async function saveCycle() {
   if (!user) return false;
-  try {
-    await setDoc(userDocRef(), { cycle: cycleData, updatedAt: serverTimestamp() }, { merge: true });
-    return true;
-  } catch { toast("Couldn't save cycle data. Please try again.", "err"); return false; }
+  const p = setDoc(userDocRef(), { cycle: cycleData, updatedAt: serverTimestamp() }, { merge: true });
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    // Offline: latency compensation already applied the local change. Keep it
+    // and let Firestore sync it when connectivity returns (don't hang the UI
+    // or make callers revert). Surface any later failure loudly.
+    p.catch((err) => { console.error(err); toast("Cycle changes couldn't sync. " + friendlyErr(err), "err"); });
+    return true; // stored on this device, queued to sync
+  }
+  try { await p; return true; }
+  catch { toast("Couldn't save cycle data. Please try again.", "err"); return false; }
 }
 function cycleDaySpan(a, b) { return Math.max(1, Math.round((parseKey(b) - parseKey(a)) / DAY_MS) + 1); }
 function cycleStats() {
@@ -853,6 +924,7 @@ function renderCycle() {
   $("cycNextSub").textContent = st.next ? `${st.next} \u00b12 days (estimate)` : "Not enough data yet";
   $("cycCount").textContent = String(st.count);
   if ($("cycleReminderChk")) $("cycleReminderChk").checked = !!cycleData.reminder;
+  if ($("cycleLead")) { $("cycleLead").value = String(cycleData.lead ?? 3); $("cycleLead").disabled = !cycleData.reminder; }
   $("cycleHistory").innerHTML = st.count === 0
     ? `<p class="muted small">No entries yet. Record a period above to start building history.</p>`
     : cycleData.entries.map((e) => `
@@ -867,18 +939,38 @@ function renderCycle() {
           <button class="act-btn danger" type="button" data-cyc-del="${esc(e.id)}" aria-label="Delete entry starting ${esc(e.start)}" title="Delete"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></button>
         </div>
       </div>`).join("");
+  // Recalculate the reminder whenever entries, lead time or enable state change.
+  if (user && cycleData.enabled) evaluateCycleReminder();
 }
-function maybeCycleReminder() {
+function cycleRemindKey(next) { return `pht_cyc_rem_${user.uid}_${next}`; }
+function invalidateStaleCycleReminders(currentNext) {
+  // Drop reminder markers whose predicted date no longer matches the live
+  // prediction (an entry was added, edited or deleted), so a stale schedule
+  // can't fire. Keys are per-user; only this user's markers are touched.
+  const prefix = `pht_cyc_rem_${user.uid}_`;
+  const keep = currentNext ? prefix + currentNext : null;
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(prefix) && k !== keep) localStorage.removeItem(k);
+  }
+}
+function evaluateCycleReminder() {
   if (!user || !cycleData.enabled || !cycleData.reminder) return;
   const st = cycleStats();
-  if (!st.next) return;
-  const key = `pht_cyc_rem_${user.uid}_${st.next}`;
-  if (localStorage.getItem(key)) return;
-  const today = todayKey();
-  if (today >= st.next && today <= (st.nextEnd || st.next)) {
-    localStorage.setItem(key, "1");
-    toast("Cycle Tracker reminder");
+  invalidateStaleCycleReminders(st.next);
+  if (!st.next) return; // not enough history — never fabricate a date
+  const lead = Number.isFinite(cycleData.lead) ? cycleData.lead : 3;
+  const diffDays = Math.round((parseKey(st.next) - parseKey(todayKey())) / DAY_MS);
+  // Fire once, within `lead` days before (or on) the estimated date.
+  if (diffDays < 0 || diffDays > lead) return;
+  const key = cycleRemindKey(st.next);
+  if (localStorage.getItem(key)) return; // one reminder per prediction
+  localStorage.setItem(key, "1");
+  // Discreet, privacy-conscious wording: no dates or specifics in the alert.
+  if ("Notification" in window && Notification.permission === "granted") {
+    try { new Notification("Cycle reminder", { body: "A tracked date is coming up soon. Open Pro Habit Tracker for details." }); } catch { /* fall back to in-app notice */ }
   }
+  toast("Cycle reminder: an estimated date is coming up soon.");
 }
 function cycleFieldErr(inputId, errId, msg) {
   const el = $(errId);
@@ -1030,8 +1122,15 @@ function requestLocation() {
   );
 }
 
-/* ================= Reminders ================= */
+/* ================= Reminders =================
+   These are page-context timers only. A website cannot execute JavaScript after
+   its tab/page has been closed, so reminders fire only while this page is
+   running. When the tab is hidden, browsers throttle timers (often to >=1min),
+   so a reminder near a minute boundary can still fire late but on the same day.
+   Nothing here runs in the background once the page is gone — that requires a
+   native build (future phase) or a push service (not added, needs approval). */
 const reminderKey = () => `pht_reminders_${user?.uid || "anon"}`;
+const firedKey = (uid, hhmm, day) => `pht_fired_${uid}_${hhmm}_${day}`;
 function loadReminders() {
   try { return { time: "20:00", enabled: false, ...JSON.parse(localStorage.getItem(reminderKey()) || "{}") }; }
   catch { return { time: "20:00", enabled: false }; }
@@ -1044,19 +1143,43 @@ async function updateNotifStatus() {
   if (!("Notification" in window)) { el.textContent = "Browser notifications: not supported — in-app toasts will be used."; return; }
   el.textContent = `Browser notifications: ${Notification.permission}.`;
 }
-setInterval(() => {
+// Fires at most once per (user, time, calendar-day). Dedup key is account-scoped
+// and date-aware, so multiple tabs / reloads / rerenders never double-fire, and
+// a timezone or date change naturally moves to a new day's key (old keys are
+// never reused for a past day).
+function checkHabitReminder() {
   if (!user) return;
   const r = loadReminders();
-  if (!r.enabled) return;
+  if (!r.enabled || !/^\d{2}:\d{2}$/.test(r.time || "")) return;
   const now = `${pad(new Date().getHours())}:${pad(new Date().getMinutes())}`;
   if (now !== r.time) return;
-  if (localStorage.getItem(`pht_fired_${user.uid}_${now}_${todayKey()}`)) return;
-  localStorage.setItem(`pht_fired_${user.uid}_${now}_${todayKey()}`, "1");
-  const left = habits.filter((h) => isScheduled(h, todayKey()) && !(h.completions || []).includes(todayKey()));
+  const day = todayKey();
+  if (localStorage.getItem(firedKey(user.uid, now, day))) return;
+  localStorage.setItem(firedKey(user.uid, now, day), "1");
+  const left = habits.filter((h) => isScheduled(h, day) && !(h.completions || []).includes(day));
   const msg = left.length ? `You still have ${left.length} habit(s) to complete today.` : "All habits done for today. Nice work!";
   if ("Notification" in window && Notification.permission === "granted") { try { new Notification("Habit reminder", { body: msg }); } catch { toast(msg); } }
   else toast(msg);
-}, 20000);
+}
+let _reminderTimer = null;
+function startReminderTimer() { if (!_reminderTimer) _reminderTimer = setInterval(checkHabitReminder, 20000); }
+function stopReminderTimer() { if (_reminderTimer) { clearInterval(_reminderTimer); _reminderTimer = null; } }
+startReminderTimer();
+// Remove this user's expired reminder dedup markers (old calendar days) so
+// localStorage can't grow without bound. Never touches the saved reminder-time
+// preference (pht_reminders_{uid}), the theme key, or any other user's keys.
+function pruneFiredReminderKeys() {
+  if (!user) return;
+  const today = todayKey();
+  const prefix = `pht_fired_${user.uid}_`;
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(prefix)) {
+      const m = k.match(/_(\d{4}-\d{2}-\d{2})$/);
+      if (m && m[1] < today) localStorage.removeItem(k);
+    }
+  }
+}
 
 /* ================= Navigation ================= */
 function go(view) {
@@ -1128,7 +1251,20 @@ function bind() {
   });
   if ($("cycleReminderChk")) $("cycleReminderChk").onchange = async (e) => {
     cycleData = { ...cycleData, reminder: e.target.checked };
+    if (e.target.checked && "Notification" in window && Notification.permission === "default") {
+      // Only request permission on an explicit user action, never on page load.
+      try { await Notification.requestPermission(); } catch { /* ignore */ }
+      updateNotifStatus();
+    }
     if (!(await saveCycle())) { cycleData = { ...cycleData, reminder: !e.target.checked }; e.target.checked = !e.target.checked; }
+    if ($("cycleLead")) $("cycleLead").disabled = !cycleData.reminder;
+    evaluateCycleReminder();
+  };
+  if ($("cycleLead")) $("cycleLead").onchange = async (e) => {
+    const n = Number(e.target.value);
+    cycleData = { ...cycleData, lead: Number.isFinite(n) ? Math.min(14, Math.max(0, Math.round(n))) : 3 };
+    if (!(await saveCycle())) { renderCycle(); return; }
+    evaluateCycleReminder();
   };
   $("locBtn").onclick = () => requestLocation();
   $("locRetryBtn").onclick = () => requestLocation();
@@ -1214,14 +1350,20 @@ function bind() {
   $("themeSelect").onchange = (e) => setTheme(e.target.value);
   $("themeToggle").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
   $("themeToggleSide").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
-  $("reminderTime").onchange = (e) => saveReminders({ time: e.target.value });
+  $("reminderTime").onchange = (e) => {
+    const v = e.target.value;
+    if (!/^\d{2}:\d{2}$/.test(v)) { e.target.value = loadReminders().time; return; }
+    saveReminders({ time: v });
+    checkHabitReminder(); // re-evaluate immediately for the newly chosen time
+  };
   $("reminderEnabled").onchange = async (e) => {
     if (e.target.checked && "Notification" in window && Notification.permission === "default") {
       try { await Notification.requestPermission(); } catch { /* ignore */ }
       updateNotifStatus();
     }
     saveReminders({ enabled: e.target.checked });
-    toast(e.target.checked ? "Daily reminder enabled." : "Daily reminder disabled.");
+    toast(e.target.checked ? "Daily reminder enabled. It runs while this page is open." : "Daily reminder disabled.");
+    checkHabitReminder();
   };
   $("testNotifBtn").onclick = async () => {
     if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
@@ -1279,9 +1421,13 @@ function handleAuth(u) {
     renderAccountInfo(u);
     subscribe(); go("dashboard");
     loadCycle();
+    pruneFiredReminderKeys(); // tidy this user's expired reminder markers
+    noteOnline(); paintSyncChip();
   } else {
     unsub?.(); clearTimeout(snapTimer); habits = []; detailId = null;
-    cycleData = { enabled: false, entries: [], reminder: false };
+    cycleData = { enabled: false, entries: [], reminder: false, lead: 3 };
+    _sync.pending = 0; // no writes should outlive the session's UI state
+    if ($("syncChip")) $("syncChip").hidden = true;
     $("loadingBar").hidden = true;
     showError(null); authErr(null);
     for (const m of ["accountModal", "habitModal", "detailModal", "confirmModal"]) { const el = $(m); if (el) el.hidden = true; }
@@ -1325,5 +1471,27 @@ let _lastDayKey = todayKey();
 const _dayCheckMs = () => (typeof window !== "undefined" && window.__PHT_DAY_CHECK_MS) || 30000;
 let _dayTimer = setInterval(() => {
   const k = todayKey();
-  if (k !== _lastDayKey) { _lastDayKey = k; if (user) renderAll(); }
+  if (k !== _lastDayKey) { _lastDayKey = k; if (user) { renderAll(); evaluateCycleReminder(); } }
 }, _dayCheckMs());
+
+// Catch reminders and connectivity changes when the tab becomes active again
+// (timers are throttled while hidden, so re-check on focus/visibility).
+if (typeof document !== "undefined") {
+  const _onVisible = () => {
+    if (document.visibilityState !== "visible") return;
+    noteOnline(); paintSyncChip();
+    checkHabitReminder(); evaluateCycleReminder();
+  };
+  document.addEventListener("visibilitychange", _onVisible);
+  if (typeof window !== "undefined") window.addEventListener("focus", _onVisible);
+}
+
+// Test seam (inert unless a test pre-sets window.__PHT_TEST__). Matches the
+// existing window.__PHT_SNAP_TIMEOUT / __PHT_DAY_CHECK_MS convention so the
+// offline-write + reminder logic can be exercised without a live backend.
+if (typeof window !== "undefined" && window.__PHT_TEST__) {
+  Object.assign(window.__PHT_TEST__, {
+    settleWrite, checkHabitReminder, evaluateCycleReminder,
+    pruneFiredReminderKeys, cycleRemindKey, firedKey, paintSyncChip,
+  });
+}
