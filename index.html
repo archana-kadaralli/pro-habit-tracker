@@ -1,22 +1,584 @@
 <!DOCTYPE html>
-<html>
+<html lang="en" data-theme="light">
 <head>
-  <title>Habit Tracker</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Pro Habit Tracker — Personal Productivity Dashboard</title>
+  <meta name="description" content="Track habits, build streaks, and visualise your consistency.">
   <link rel="stylesheet" href="style.css">
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..700&family=Inter:wght@400;500;600;700;750&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231d6b52'/><path d='M9 20V14M16 20V9M23 20V16' stroke='white' stroke-width='3' stroke-linecap='round'/></svg>">
 </head>
-
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
 
-  <h1>🔥 Habit Tracker</h1>
+  <!-- ============ ICON SPRITE (Lucide-style stroke icons) ============ -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+    <symbol id="i-dash" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M11 6h10M11 12h10M11 18h10"/><path d="m3 5 1.6 1.6L7.8 3.8"/><path d="m3 11 1.6 1.6L7.8 9.8"/><path d="m3 17 1.6 1.6L7.8 15.8"/></symbol>
+    <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M8 2.5v4M16 2.5v4M3 10h18"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 4v16h16"/><path d="M8 18v-6M13 18v-10M18 18v-4"/></symbol>
+    <symbol id="i-trophy" viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1.5 14h5M9.5 8h5M17.5 16h5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6"/><path d="M19 6l-.9 13.1A2 2 0 0 1 16.1 21H7.9a2 2 0 0 1-2-1.9L5 6"/><path d="M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
+    <symbol id="i-flame" viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4.5"/><path d="M12 16h.01"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></symbol>
+    <symbol id="i-award" viewBox="0 0 24 24"><circle cx="12" cy="8" r="5.5"/><path d="m8.5 13-2 8 5.5-3 5.5 3-2-8"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></symbol>
+    <symbol id="i-check-c" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></symbol>
+    <symbol id="i-palette" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="10" r="1.2"/><circle cx="12" cy="7.5" r="1.2"/><circle cx="15.5" cy="10" r="1.2"/><path d="M12 21a3 3 0 0 1 0-6 2 2 0 0 0 0-4"/></symbol>
+    <symbol id="i-cycle" viewBox="0 0 24 24"><path d="M12 3s6 6.2 6 10a6 6 0 0 1-12 0c0-3.8 6-10 6-10z"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-5.2-6.5-10a6.5 6.5 0 0 1 13 0C18.5 15.8 12 21 12 21z"/><circle cx="12" cy="10.6" r="2.4"/></symbol>
+    <symbol id="i-google" viewBox="0 0 24 24">
+      <path stroke="none" fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"/>
+      <path stroke="none" fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09C3.26 21.3 7.31 24 12 24z"/>
+      <path stroke="none" fill="#FBBC05" d="M5.27 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.98-3.09z"/>
+      <path stroke="none" fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75z"/>
+    </symbol>
+  </defs></svg>
 
-  <input type="text" id="habitInput" placeholder="Enter habit">
-  <button id="addBtn">Add Habit</button>
+  <!-- ============ SESSION BOOT / LOADING ============ -->
+  <div id="authLoading" class="boot-screen" role="status" aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div>
+    <p>Restoring your session…</p>
+  </div>
 
-  <div id="habitList"></div>
+  <!-- ============ AUTH VIEW ============ -->
+  <div id="authView" class="auth-wrap" hidden>
+    <div class="auth-aside" aria-hidden="true">
+      <div class="brand-mark"><span class="mark-logo"><svg class="ic"><use href="#i-chart"/></svg></span> Pro Habit Tracker</div>
+      <div>
+        <h2>Small habits, compounded daily.</h2>
+        <p class="aside-sub">A private productivity dashboard that turns daily check-ins into streaks, insights and long-term consistency.</p>
+        <ul>
+          <li><svg class="ic"><use href="#i-check-c"/></svg><span>Schedule-aware streaks computed from your real completion history</span></li>
+          <li><svg class="ic"><use href="#i-check-c"/></svg><span>GitHub-style activity heatmap and honest analytics</span></li>
+          <li><svg class="ic"><use href="#i-check-c"/></svg><span>Every account keeps its own isolated, rule-protected data</span></li>
+        </ul>
+        <div class="aside-art" aria-hidden="true"></div>
+      </div>
+      <div class="aside-foot">Firebase Authentication · Cloud Firestore · per-user security rules</div>
+    </div>
+    <div class="auth-panel">
+      <div class="auth-card">
+        <div class="auth-mobile-brand"><span class="mark-logo"><svg class="ic"><use href="#i-chart"/></svg></span> Pro Habit Tracker</div>
+        <h1 id="authTitle">Welcome back</h1>
+        <p class="auth-sub" id="authSub">Log in to continue building your streaks.</p>
+        <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
+          <button id="tabLogin" class="auth-tab active" role="tab" aria-selected="true" type="button">Log in</button>
+          <button id="tabSignup" class="auth-tab" role="tab" aria-selected="false" type="button">Sign up</button>
+        </div>
+        <form id="authForm" novalidate>
+          <div class="field">
+            <label for="authEmail">Email</label>
+            <input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com" required>
+          </div>
+          <div class="field">
+            <label for="authPassword">Password</label>
+            <input id="authPassword" type="password" autocomplete="current-password" placeholder="Minimum 6 characters" required minlength="6">
+          </div>
+          <p id="authError" class="field-error" role="alert" hidden></p>
+          <button id="authSubmit" type="submit" class="btn primary block">Log in</button>
+        </form>
+        <div class="divider"><span>or</span></div>
+        <button id="googleBtn" class="btn block" type="button"><svg class="ic"><use href="#i-google"/></svg> Continue with Google</button>
+        <p class="auth-note">Data is stored per-user in Cloud Firestore under <code>users/{uid}/habits</code>.</p>
+      </div>
+    </div>
+  </div>
 
-  <!-- ✅ ONLY THIS SCRIPT -->
+  <!-- ============ APP SHELL ============ -->
+  <div id="appShell" class="shell" hidden>
+    <div id="navScrim" class="nav-scrim" hidden></div>
+    <aside class="sidebar" aria-label="Primary">
+      <div class="brand-mark"><span class="mark-logo"><svg class="ic"><use href="#i-chart"/></svg></span> Pro Habit Tracker</div>
+      <nav class="nav" id="mainNav" aria-label="Main navigation">
+        <div class="nav-label">Menu</div>
+        <button class="nav-item active" data-nav="dashboard" aria-current="page"><svg class="ic"><use href="#i-dash"/></svg> Dashboard</button>
+        <button class="nav-item" data-nav="habits"><svg class="ic"><use href="#i-list"/></svg> Habits</button>
+        <button class="nav-item" data-nav="cycle"><svg class="ic"><use href="#i-cycle"/></svg> Cycle</button>
+        <button class="nav-item" data-nav="calendar"><svg class="ic"><use href="#i-cal"/></svg> Calendar</button>
+        <button class="nav-item" data-nav="analytics"><svg class="ic"><use href="#i-chart"/></svg> Analytics</button>
+        <button class="nav-item" data-nav="achievements"><svg class="ic"><use href="#i-trophy"/></svg> Achievements</button>
+        <button class="nav-item" data-nav="settings"><svg class="ic"><use href="#i-sliders"/></svg> Settings</button>
+      </nav>
+      <div class="side-foot">
+        <div class="level-mini" id="levelMini" title="Your level">—</div>
+        <div class="user-row">
+          <button id="accountBtn" class="user-chip" type="button" aria-haspopup="dialog" aria-label="Open account details">
+            <span class="user-avatar" id="userAvatar" aria-hidden="true">?</span>
+            <span class="user-text">
+              <span id="userName" class="user-name">Account</span>
+              <span id="userEmail" class="user-email">—</span>
+            </span>
+          </button>
+          <button id="logoutBtn" class="icon-btn ghost" aria-label="Log out" title="Log out"><svg class="ic"><use href="#i-logout"/></svg></button>
+        </div>
+        <button id="themeToggleSide" class="btn sm ghost" aria-pressed="false" type="button"><svg class="ic"><use href="#i-moon"/></svg> <span class="tlabel">Dark mode</span></button>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <header class="topbar">
+        <button id="menuBtn" class="icon-btn menu-btn" aria-label="Open navigation" aria-expanded="false" type="button"><svg class="ic"><use href="#i-menu"/></svg></button>
+        <div class="topbar-title" id="topbarTitle">Dashboard</div>
+        <div class="topbar-actions">
+          <div id="syncChip" class="sync-chip" role="status" aria-live="polite" hidden></div>
+          <button id="themeToggle" class="btn sm ghost" aria-pressed="false" type="button"><svg class="ic"><use href="#i-moon"/></svg> <span class="tlabel">Dark mode</span></button>
+          <button id="addHabitTopBtn" class="btn primary sm" type="button"><svg class="ic ic-sm"><use href="#i-plus"/></svg> New habit</button>
+        </div>
+      </header>
+
+      <main id="main" class="content" tabindex="-1">
+        <div id="globalError" class="banner error" role="alert" hidden></div>
+        <div id="loadingBar" class="loading" hidden><div class="spinner" aria-hidden="true"></div><span>Loading your habits…</span></div>
+
+        <!-- DASHBOARD -->
+        <section id="view-dashboard" class="view active" aria-label="Dashboard">
+          <div class="greeting-row">
+            <div>
+              <h2 id="greeting">Good morning</h2>
+              <p class="date-line" id="dateLine">—</p>
+            </div>
+            <button class="btn primary" id="addHabitBtn" type="button"><svg class="ic ic-sm"><use href="#i-plus"/></svg> New habit</button>
+          </div>
+          <div class="grid stats-grid" id="statCards"></div>
+          <div class="grid two-col">
+            <div class="card">
+              <div class="card-head">
+                <div><h3>Today's habits</h3><div class="sub" id="todaySub">Your schedule for today</div></div>
+                <span id="todayCount" class="pill accent">0/0</span>
+              </div>
+              <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Today's completion"><div id="todayProgress" class="progress-fill" style="width:0%"></div></div>
+              <div id="todayList" class="habit-list"></div>
+            </div>
+            <div class="stack">
+              <div class="card">
+                <div class="card-head"><div><h3>This week</h3><div class="sub">Completions per day</div></div></div>
+                <div id="weekStrip" class="week-strip"></div>
+              </div>
+              <div class="card">
+                <div class="card-head"><div><h3>Insights</h3><div class="sub">Calculated from your data</div></div></div>
+                <ul id="insightsList" class="insights"></ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- HABITS -->
+        <section id="view-habits" class="view" aria-label="Habits">
+          <div class="page-head">
+            <div>
+              <h2>Habits <span id="habitCount" class="pill">0</span></h2>
+              <p class="page-sub">Create, organise and complete your daily habits.</p>
+            </div>
+            <button class="btn primary" data-add-habit type="button"><svg class="ic ic-sm"><use href="#i-plus"/></svg> New habit</button>
+          </div>
+          <div class="toolbar card">
+            <div class="toolbar-row">
+              <div>
+                <label for="searchInput">Search</label>
+                <div class="search-wrap">
+                  <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+                  <input id="searchInput" type="search" placeholder="Search by name or description…">
+                </div>
+              </div>
+              <div>
+                <label for="filterCategory">Category</label>
+                <select id="filterCategory">
+                  <option value="">All categories</option>
+                  <option>Health</option><option>Fitness</option><option>Learning</option>
+                  <option>Productivity</option><option>Personal</option><option>Other</option>
+                </select>
+              </div>
+              <div>
+                <label for="filterStatus">Status</label>
+                <select id="filterStatus">
+                  <option value="all">All</option>
+                  <option value="todo">Not done today</option>
+                  <option value="done">Done today</option>
+                </select>
+              </div>
+              <div>
+                <label for="sortBy">Sort by</label>
+                <select id="sortBy">
+                  <option value="newest">Recently created</option>
+                  <option value="name">Name</option>
+                  <option value="streak">Current streak</option>
+                  <option value="rate">Completion rate</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div id="allHabits" class="habit-grid"></div>
+        </section>
+
+        <!-- CALENDAR -->
+        <section id="view-calendar" class="view" aria-label="Calendar">
+          <div class="page-head">
+            <div>
+              <h2>Calendar</h2>
+              <p class="page-sub">Your completion activity across the last 15 weeks.</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="hm-legend-row">
+              <div>
+                <label for="heatmapHabit" style="margin:0 0 6px">Habit</label>
+                <select id="heatmapHabit" style="width:auto;min-width:200px"><option value="__all">All habits</option></select>
+              </div>
+              <div class="heatmap-legend"><span>Less</span><span class="sw" data-l="0"></span><span class="sw" data-l="1"></span><span class="sw" data-l="2"></span><span class="sw" data-l="3"></span><span class="sw" data-l="4"></span><span>More</span></div>
+            </div>
+            <div class="hm-scroll">
+              <div class="hm-inner">
+                <div class="hm-months" id="hmMonths" aria-hidden="true"></div>
+                <div class="hm-body">
+                  <div class="hm-weekdays" aria-hidden="true"><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span></span></div>
+                  <div class="heatmap" id="heatmap" role="grid" aria-label="Completion heatmap"></div>
+                </div>
+              </div>
+            </div>
+            <div id="dayDetail" class="day-detail"><p class="muted">Click a day to see its activity.</p></div>
+          </div>
+        </section>
+
+        <!-- ANALYTICS -->
+        <section id="view-analytics" class="view" aria-label="Analytics">
+          <div class="page-head">
+            <div>
+              <h2>Analytics</h2>
+              <p class="page-sub">Honest metrics computed from your completion history.</p>
+            </div>
+          </div>
+          <div class="grid stats-grid" id="analyticsStats"></div>
+          <div class="grid two-col">
+            <div class="card"><div class="card-head"><div><h3>Last 7 days</h3><div class="sub">Completions per day</div></div></div><div id="chartWeek" class="bars"></div><p class="chart-note" id="chartWeekNote"></p></div>
+            <div class="card"><div class="card-head"><div><h3>Last 30 days</h3><div class="sub">Completions per 5-day period</div></div></div><div id="chartMonth" class="bars"></div><p class="chart-note" id="chartMonthNote"></p></div>
+          </div>
+          <div class="grid two-col">
+            <div class="card"><div class="card-head"><div><h3>Consistency by habit</h3><div class="sub">Completion rate of scheduled days</div></div></div><div id="chartHabits" class="hbars"></div></div>
+            <div class="card"><div class="card-head"><div><h3>Category performance</h3><div class="sub">Completion rate per category</div></div></div><div id="chartCategories" class="hbars"></div></div>
+          </div>
+        </section>
+
+        <!-- ACHIEVEMENTS -->
+        <section id="view-achievements" class="view" aria-label="Achievements">
+          <div class="page-head">
+            <div>
+              <h2>Achievements</h2>
+              <p class="page-sub">Milestones and XP earned from real completions — nothing is faked.</p>
+            </div>
+          </div>
+          <div class="card xp-card">
+            <div class="xp-level"><small>Level</small><span id="xpLevel">1</span></div>
+            <div class="xp-mid">
+              <div class="xp-text" id="xpText">0 XP</div>
+              <div class="progress big" role="progressbar" aria-valuemin="0" aria-valuemax="200" aria-valuenow="0" aria-label="Progress to next level"><div id="xpFill" class="progress-fill" style="width:0%"></div></div>
+              <div class="xp-text muted small" id="xpNext">—</div>
+            </div>
+          </div>
+          <div id="badges" class="badge-grid" style="margin-top:16px"></div>
+        </section>
+
+        <!-- CYCLE TRACKER -->
+        <section id="view-cycle" class="view" aria-label="Cycle Tracker">
+          <div class="page-head">
+            <div>
+              <h2>Cycle Tracker</h2>
+              <p class="page-sub">Optional private period tracking. Nothing here is shared.</p>
+            </div>
+          </div>
+
+          <div id="cycleDisabled" class="card cycle-opt-in">
+            <h3>Track your menstrual cycle?</h3>
+            <p class="card-sub">This feature is off by default. If you enable it, you can record period start and end dates, view history, and see rough estimates of your average cycle. Data stays private to your account, is never sent to third parties, and can be deleted at any time. Predictions are estimates only — cycles vary and this is not medical advice.</p>
+            <div class="row" style="margin-top:16px">
+              <button id="cycleEnableBtn" class="btn primary" type="button"><svg class="ic ic-sm"><use href="#i-cycle"/></svg> Enable cycle tracking</button>
+            </div>
+          </div>
+
+          <div id="cyclePanel" hidden>
+            <div class="cycle-stats stats-grid" id="cycleStats">
+              <div class="stat"><div class="k">Last period</div><div class="v" id="cycLast">—</div><div class="s" id="cycLastSub">No entries yet</div></div>
+              <div class="stat"><div class="k">Average cycle</div><div class="v" id="cycAvg">—</div><div class="s" id="cycAvgSub">Needs 2+ periods</div></div>
+              <div class="stat"><div class="k">Next expected</div><div class="v" id="cycNext">—</div><div class="s" id="cycNextSub">Estimate only</div></div>
+              <div class="stat"><div class="k">Entries</div><div class="v" id="cycCount">0</div><div class="s">recorded periods</div></div>
+            </div>
+            <p class="cycle-note muted small"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-alert"/></svg> Estimates are rough averages from your own entries and can be wrong. Cycles vary naturally. This is not medical advice.</p>
+
+            <div class="card" style="margin-top:16px">
+              <div class="card-head">
+                <div>
+                  <h3 id="cycleFormTitle">Record a period</h3>
+                  <p class="sub">Dates are required. Symptoms and notes are optional — skip them freely.</p>
+                </div>
+              </div>
+              <form id="cycleForm" novalidate>
+                <input type="hidden" id="cycId">
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="cycStart">First day *</label>
+                    <input id="cycStart" type="date" required>
+                    <span id="cycStartErr" class="field-error" hidden></span>
+                  </div>
+                  <div class="field">
+                    <label for="cycEnd">Last day <span class="muted" style="font-weight:500">(optional)</span></label>
+                    <input id="cycEnd" type="date">
+                    <span id="cycEndErr" class="field-error" hidden></span>
+                  </div>
+                </div>
+                <div class="field">
+                  <span class="field-label">Symptoms <span class="muted" style="font-weight:500">(optional — none is fine)</span></span>
+                  <div class="days" id="cycSymptoms">
+                    <label><input type="checkbox" value="Cramps"> Cramps</label>
+                    <label><input type="checkbox" value="Headache"> Headache</label>
+                    <label><input type="checkbox" value="Fatigue"> Fatigue</label>
+                    <label><input type="checkbox" value="Bloating"> Bloating</label>
+                    <label><input type="checkbox" value="Mood changes"> Mood changes</label>
+                    <label><input type="checkbox" value="Other"> Other</label>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="cycNote">Note <span class="muted" style="font-weight:500">(optional)</span></label>
+                  <textarea id="cycNote" rows="2" maxlength="200" placeholder="Anything you want to remember"></textarea>
+                </div>
+                <div class="row" style="gap:9px">
+                  <button id="cycSaveBtn" class="btn primary" type="submit">Save entry</button>
+                  <button id="cycCancelEdit" class="btn ghost" type="button" hidden>Cancel edit</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="card" style="margin-top:16px">
+              <div class="card-head">
+                <div>
+                  <h3>History</h3>
+                  <p class="sub">Your recorded periods, newest first.</p>
+                </div>
+              </div>
+              <div id="cycleHistory" class="cycle-history"></div>
+            </div>
+
+            <div class="card" style="margin-top:16px">
+              <h3>Privacy &amp; data</h3>
+              <p class="card-sub">Cycle records are stored with your account data under <code>users/{uid}</code> and are readable only by you (existing Firestore security rules). They are never sent to AI services or analytics.</p>
+              <label class="check" style="margin-top:14px" for="cycleReminderChk"><input id="cycleReminderChk" type="checkbox"> Remind me before an estimated date (discreet; uses a system notification if you allow them, otherwise an in-app notice)</label>
+              <div class="row" style="gap:9px;margin-top:12px">
+                <label for="cycleLead" style="margin:0">Remind me this many days ahead</label>
+                <select id="cycleLead" style="width:auto;min-width:110px" disabled>
+                  <option value="0">Same day</option><option value="1">1 day</option><option value="2">2 days</option>
+                  <option value="3" selected>3 days</option><option value="5">5 days</option><option value="7">7 days</option>
+                </select>
+              </div>
+              <p class="muted small" style="margin-top:10px">The reminder uses the next-date estimate from your own recorded history (it is not a certainty or medical advice). It only appears while Pro Habit Tracker is open in this browser — a website cannot run after it is closed.</p>
+              <div class="row" style="gap:9px;flex-wrap:wrap;margin-top:14px">
+                <button id="cycleDisableBtn" class="btn" type="button">Turn off cycle tracking</button>
+                <button id="cycleDeleteAllBtn" class="btn danger" type="button"><svg class="ic ic-sm"><use href="#i-trash"/></svg> Delete all cycle data</button>
+              </div>
+              <p class="muted small" style="margin-top:10px">Turning off hides the feature but keeps your records so you can restore them. Deleting removes every cycle entry permanently.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- SETTINGS -->
+        <section id="view-settings" class="view" aria-label="Settings">
+          <div class="page-head">
+            <div>
+              <h2>Settings</h2>
+              <p class="page-sub">Appearance, reminders and account details.</p>
+            </div>
+          </div>
+          <div class="settings-grid">
+            <div class="card">
+              <h3>Appearance</h3>
+              <p class="card-sub">Choose how the dashboard looks on this device.</p>
+              <div class="row">
+                <label for="themeSelect" style="margin:0">Theme</label>
+                <select id="themeSelect" style="width:auto;min-width:150px"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+              </div>
+              <div class="row"><span class="muted small">Preference is saved locally and applied instantly.</span></div>
+            </div>
+            <div class="card">
+              <h3>Reminders</h3>
+              <p class="card-sub">A daily nudge for habits you haven't finished.</p>
+              <div class="row"><label for="reminderTime" style="margin:0">Daily reminder time</label><input id="reminderTime" type="time" value="20:00" style="width:auto"></div>
+              <div class="row" style="margin-top:14px">
+                <label class="check" for="reminderEnabled"><input id="reminderEnabled" type="checkbox"> Enable daily reminder for incomplete habits</label>
+                <button id="testNotifBtn" class="btn sm" type="button"><svg class="ic ic-sm"><use href="#i-bell"/></svg> Send test</button>
+              </div>
+              <p class="muted small" id="notifStatus" style="margin-top:14px">Browser notifications: unknown.</p>
+              <p class="muted small" style="margin-top:4px">If notifications are blocked, the app falls back to an in-app toast at the reminder time.</p>
+              <p class="muted small" style="margin-top:4px">Reminders run only while this page is open — close the tab and they pause (a website can't execute in the background). Habit and cycle data still work offline and sync when you reconnect.</p>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Account</h3>
+            <p class="card-sub">Session and data location.</p>
+            <div class="account-line"><span class="al-k">Name</span><span class="al-v" id="settingsName">—</span></div>
+            <div class="account-line"><span class="al-k">Signed in as</span><span class="al-v" id="settingsEmail">—</span></div>
+            <div class="account-line"><span class="al-k">Data path</span><span class="al-v"><code id="dataPath">users/{uid}/habits</code></span></div>
+            <div class="account-line"><span class="al-k">Access</span><span class="al-v">Isolated by Firestore security rules</span></div>
+          </div>
+          <div class="card" style="margin-top:16px">
+            <h3><svg class="ic ic-sm" aria-hidden="true"><use href="#i-pin"/></svg> Location</h3>
+            <p class="card-sub">Optional one-off location check — for example before an outdoor habit. Your position is shown once and is never stored, logged or sent anywhere. This app does not track you in the background.</p>
+            <div class="row" style="gap:9px;flex-wrap:wrap;margin-top:14px">
+              <button id="locBtn" class="btn" type="button"><svg class="ic ic-sm"><use href="#i-pin"/></svg> Use my location</button>
+              <button id="locRetryBtn" class="btn ghost" type="button" hidden>Retry</button>
+            </div>
+            <p id="locStatus" class="loc-status muted small" role="status" aria-live="polite" style="margin-top:12px">Location has not been requested.</p>
+            <p id="locHelp" class="muted small" hidden style="margin-top:6px"></p>
+            <p id="locCoords" class="loc-coords" hidden></p>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Account modal -->
+  <div id="accountModal" class="modal" hidden>
+    <div class="modal-card small" role="dialog" aria-modal="true" aria-labelledby="accountModalTitle">
+      <div class="modal-head">
+        <h3 id="accountModalTitle">Account</h3>
+        <button class="icon-btn ghost" type="button" data-close-modal="accountModal" aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="modal-body">
+        <div class="account-hero">
+          <span class="user-avatar lg" id="acctAvatar" aria-hidden="true">?</span>
+          <div class="account-hero-text">
+            <div class="account-email" id="acctEmail">—</div>
+            <div class="account-status muted small" id="acctStatusLine">Signed in</div>
+          </div>
+        </div>
+        <form id="acctNameForm" novalidate>
+          <div class="field">
+            <label for="acctNameInput">Display name</label>
+            <input id="acctNameInput" maxlength="50" autocomplete="name" placeholder="How should we greet you?">
+            <span id="acctNameErr" class="field-error" hidden></span>
+            <span id="acctNameOk" class="acct-ok" hidden>Profile updated.</span>
+          </div>
+          <div class="row" style="gap:9px">
+            <button id="acctSaveBtn" class="btn primary sm" type="submit">Save</button>
+            <button id="acctCancelBtn" class="btn ghost sm" type="button">Cancel</button>
+          </div>
+        </form>
+        <div class="account-lines" style="margin-top:16px">
+          <div class="account-line"><span class="al-k">Email</span><span class="al-v" id="acctEmailLine">—</span></div>
+          <p id="acctEmailNote" class="muted small" hidden style="margin:-6px 0 10px"></p>
+          <div class="account-line" id="acctCreatedRow" hidden><span class="al-k">Member since</span><span class="al-v" id="acctCreated">—</span></div>
+          <div class="account-line"><span class="al-k">Theme</span><span class="al-v" id="acctTheme">—</span></div>
+          <div class="account-line"><span class="al-k">Sign-in method</span><span class="al-v" id="acctProvider">—</span></div>
+          <div class="account-line"><span class="al-k">Data path</span><span class="al-v"><code id="acctPath">—</code></span></div>
+        </div>
+      </div>
+      <div class="modal-foot split">
+        <span id="acctError" class="field-error" hidden>Sign-out failed. Try again.</span>
+        <button id="acctLogoutBtn" class="btn danger-solid" type="button"><svg class="ic ic-sm"><use href="#i-logout"/></svg> Sign out</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Habit form modal -->
+  <div id="habitModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="habitModalTitle">
+      <div class="modal-head">
+        <h3 id="habitModalTitle">New habit</h3>
+        <button class="icon-btn ghost" type="button" data-close-modal="habitModal" aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+      <form id="habitForm" novalidate>
+        <div class="modal-body">
+          <input type="hidden" id="habitId">
+          <div class="form-section-title">Basics</div>
+          <div class="field">
+            <label for="fName">Habit name *</label>
+            <input id="fName" maxlength="60" required placeholder="e.g. Read 20 pages" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="fDesc">Description <span class="muted" style="font-weight:500">(optional)</span></label>
+            <textarea id="fDesc" rows="2" maxlength="240" placeholder="Why does this matter?"></textarea>
+          </div>
+          <div class="form-section-title">Category &amp; icon</div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="fCategory">Category</label>
+              <select id="fCategory"><option>Health</option><option>Fitness</option><option>Learning</option><option>Productivity</option><option>Personal</option><option>Other</option></select>
+            </div>
+            <div class="field">
+              <label for="fIcon">Icon</label>
+              <select id="fIcon"><option value="◉">◉ Default</option><option value="♥">♥ Health</option><option value="▲">▲ Fitness</option><option value="✎">✎ Learning</option><option value="✔">✔ Productivity</option><option value="★">★ Personal</option><option value="●">● Other</option></select>
+            </div>
+          </div>
+          <div class="form-section-title">Color &amp; schedule</div>
+          <div class="form-grid">
+            <div class="field">
+              <span class="field-label">Color</span>
+              <div class="swatches" id="colorSwatches" role="radiogroup" aria-label="Habit color"></div>
+            </div>
+            <div class="field">
+              <label for="fFreq">Frequency</label>
+              <select id="fFreq"><option value="daily">Every day</option><option value="weekdays">Weekdays (Mon–Fri)</option><option value="custom">Specific weekdays</option></select>
+            </div>
+          </div>
+          <fieldset id="customDays" class="form-section" hidden><legend class="field-label">Active days</legend><div class="days" id="daysRow"></div></fieldset>
+          <p id="formError" class="field-error" role="alert" hidden></p>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn" id="cancelHabitBtn">Cancel</button>
+          <button type="submit" class="btn primary" id="saveHabitBtn">Save habit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Detail modal -->
+  <div id="detailModal" class="modal" hidden>
+    <div class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <div class="modal-head">
+        <h3 id="detailTitle">Habit</h3>
+        <button class="icon-btn ghost" id="closeDetailBtn" aria-label="Close details" type="button"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="modal-body" id="detailBody"></div>
+      <div class="modal-foot split">
+        <button class="btn danger" id="detailDeleteBtn" type="button"><svg class="ic ic-sm"><use href="#i-trash"/></svg> Delete</button>
+        <span class="spacer"></span>
+        <button class="btn" id="detailEditBtn" type="button"><svg class="ic ic-sm"><use href="#i-pencil"/></svg> Edit</button>
+        <button class="btn primary" id="detailToggleBtn" type="button">Mark today done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm modal -->
+  <div id="confirmModal" class="modal" hidden>
+    <div class="modal-card small" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+      <div class="modal-body" style="padding-top:22px">
+        <div class="confirm-ic" aria-hidden="true"><svg class="ic"><use href="#i-alert"/></svg></div>
+        <h3 id="confirmTitle" style="margin-bottom:8px">Are you sure?</h3>
+        <p class="muted" id="confirmText">This cannot be undone.</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" id="confirmCancel" type="button">Cancel</button>
+        <button class="btn danger-solid" id="confirmOk" type="button">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
   <script type="module" src="script.js"></script>
-
 </body>
 </html>
