@@ -1,7 +1,7 @@
 import { db, auth, googleProvider, authPersistenceReady } from "./firebase.js";
 import {
   collection, doc, addDoc, updateDoc, deleteDoc,
-  onSnapshot, serverTimestamp, arrayUnion, arrayRemove, setDoc, getDoc
+  onSnapshot, serverTimestamp, arrayUnion, arrayRemove, setDoc, getDoc, deleteField
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import {
   onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
@@ -594,6 +594,7 @@ function habitCardHTML(h, s) {
       <button class="act-btn ${s.doneToday ? "is-done" : "complete"}" data-toggle="${h.id}" aria-pressed="${s.doneToday}" aria-label="${s.doneToday ? "Undo" : "Mark"} ${esc(h.name)} ${s.doneToday ? "today" : "done"}" type="button">
         <svg class="ic" aria-hidden="true"><use href="#i-check"/></svg>${s.doneToday ? "Done" : "Mark done"}
       </button>
+      ${(s.doneToday || hasNote(h, todayKey())) ? `<button class="note-btn ${hasNote(h, todayKey()) ? "has-note" : ""}" data-note="${h.id}" data-note-day="${todayKey()}" aria-label="Completion note for ${esc(h.name)} today" title="Completion note" type="button"><svg class="ic" aria-hidden="true"><use href="#i-note"/></svg></button>` : ""}
       <button class="act-btn" data-edit="${h.id}" aria-label="Edit ${esc(h.name)}" title="Edit" type="button"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg></button>
       <button class="act-btn danger" data-del="${h.id}" aria-label="Delete ${esc(h.name)}" title="Delete" type="button"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></button>
     </div>
@@ -650,6 +651,7 @@ function renderDashboard() {
         <span class="habit-sub">${esc(h.category)}<span class="dot-sep"></span>${s.total} total</span>
       </div>
       <span class="streak-chip ${s.current === 0 ? "zero" : ""}"><svg class="ic" aria-hidden="true"><use href="#i-flame"/></svg>${s.current}d</span>
+      ${(s.doneToday || hasNote(h, todayKey())) ? `<button class="note-btn ${hasNote(h, todayKey()) ? "has-note" : ""}" data-note="${h.id}" data-note-day="${todayKey()}" aria-label="Completion note for ${esc(h.name)} today" title="Completion note" type="button"><svg class="ic" aria-hidden="true"><use href="#i-note"/></svg></button>` : ""}
     </div>`;
   }).join("") : habits.length === 0
     ? emptyState("i-list", "Create your first habit", "Track something small today — streaks and insights build from there.", "New habit")
@@ -786,8 +788,13 @@ function renderDayDetail() {
   const dLabel = parseKey(selectedDay).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
   box.innerHTML = `<div class="dd-title">${esc(dLabel)}<span class="pill ${items.length ? "success" : ""}">${items.length} completion${items.length === 1 ? "" : "s"}</span></div>` +
     (items.length
-      ? `<div class="day-chips">${items.map((h) => `<span class="day-chip"><span class="habit-dot" style="background:${esc(h.color)}" aria-hidden="true">${esc(h.icon)}</span>${esc(h.name)} <span class="muted">${esc(h.category)}</span></span>`).join("")}</div>`
-      : `<p class="muted">${missed ? `No completions — ${missed} scheduled habit${missed === 1 ? " was" : "s were"} missed.` : "No completions were scheduled for this day."}</p>`);
+      ? `<div class="day-chips">${items.map((h) => `<span class="day-chip"><span class="habit-dot" style="background:${esc(h.color)}" aria-hidden="true">${esc(h.icon)}</span>${esc(h.name)} <span class="muted">${esc(h.category)}</span> <button class="note-btn ${hasNote(h, selectedDay) ? "has-note" : ""}" data-note="${h.id}" data-note-day="${selectedDay}" aria-label="Completion note for ${esc(h.name)} on ${esc(selectedDay)}" title="Completion note" type="button"><svg class="ic" aria-hidden="true"><use href="#i-note"/></svg></button></span>`).join("")}</div>`
+      : `<p class="muted">${missed ? `No completions — ${missed} scheduled habit${missed === 1 ? " was" : "s were"} missed.` : "No completions were scheduled for this day."}</p>`) +
+    (() => {
+      const withNotes = items.filter((h) => hasNote(h, selectedDay));
+      if (!withNotes.length) return "";
+      return `<div class="dd-notes">${withNotes.map((h) => `<div class="dd-note"><p class="dd-note-h"><span class="habit-dot" style="background:${esc(h.color)}" aria-hidden="true">${esc(h.icon)}</span>${esc(h.name)}</p><p class="dd-note-text">${esc(noteOf(h, selectedDay))}</p></div>`).join("")}</div>`;
+    })();
 }
 function calcMissed(key) { return habits.filter((h) => isScheduled(h, key) && !doneOn(h, key) && key !== todayKey()).length; }
 function renderAnalytics() {
@@ -907,7 +914,9 @@ function renderDetailBody() {
         const missed = !done && sched && k !== todayKey();
         const cls = done ? "done" : missed ? "missed" : sched ? "sched" : "";
         const state = done ? "completed" : missed ? "missed" : sched ? "not yet completed" : "off-day";
-        return `<span class="hist-cell ${cls}" title="${k}: ${state}"></span>`;
+        if (!done) return `<span class="hist-cell ${cls}" title="${k}: ${state}"></span>`;
+        const noted = hasNote(h, k);
+        return `<button class="hist-cell done ${noted ? "hasnote" : ""}" data-note="${h.id}" data-note-day="${k}" title="${k}: completed — click to ${noted ? "view or edit the note" : "add a note"}" type="button"></button>`;
       }).join("")}</div>
       <div class="hist-legend">
         <span><i style="background:var(--success);border-color:var(--success)"></i> Completed</span>
@@ -919,13 +928,109 @@ function renderDetailBody() {
     <div class="detail-section">
       <h4>Recent completions</h4>
       ${recent.length
-        ? `<ul class="recent-list">${recent.map((k) => `<li>${esc(k)}</li>`).join("")}</ul>`
+        ? `<ul class="recent-list">${recent.map((k) => `<li class="${hasNote(h, k) ? "hasnote" : ""}">
+          <div class="rc-row"><span class="rc-date">${esc(k)}</span><button class="note-btn ${hasNote(h, k) ? "has-note" : ""}" data-note="${h.id}" data-note-day="${k}" aria-label="Completion note for ${esc(h.name)} on ${esc(k)}" title="Completion note" type="button"><svg class="ic" aria-hidden="true"><use href="#i-note"/></svg></button></div>
+          ${hasNote(h, k) ? `<p class="rc-note">${esc(noteOf(h, k))}</p>` : ""}
+        </li>`).join("")}</ul>`
         : `<p class="muted small">No completions yet — mark today done to start your streak.</p>`}
     </div>`;
   $("detailToggleBtn").innerHTML = `<svg class="ic ic-sm" aria-hidden="true"><use href="#i-check"/></svg> ${s.doneToday ? "Undo today" : "Mark today done"}`;
 }
 function openDetail(id, trigger = null) { detailId = id; renderDetailBody(); openModal("detailModal", { focus: "#closeDetailBtn", returnEl: trigger }); }
 function closeDetail() { detailId = null; closeModal("detailModal"); }
+
+/* ================= Completion notes =================
+   An optional per-completion note, stored on the habit document itself as
+   `notes: { "YYYY-MM-DD": "text" }` — the same completion date is the key, so
+   every date keeps its own note. The field is optional and absent on old
+   documents, and it never affects completions, streaks or analytics. */
+const NOTE_MAX = 600;
+let noteCtx = null; // { habitId, dateKey } while the note editor is open
+function noteOf(h, k) {
+  const n = h && h.notes && typeof h.notes === "object" ? h.notes[k] : "";
+  return typeof n === "string" ? n : "";
+}
+function hasNote(h, k) { return noteOf(h, k).length > 0; }
+function openNoteEditor(habitId, dateKey) {
+  const h = habits.find((x) => x.id === habitId);
+  if (!h || !isKey(dateKey)) return;
+  noteCtx = { habitId, dateKey };
+  $("noteTitle").textContent = `Note \u2014 ${h.name}`;
+  const dLabel = parseKey(dateKey).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  const done = doneOn(h, dateKey);
+  $("noteSub").textContent = `${dLabel} \u00b7 ${done ? "completed" : "not completed"} \u00b7 optional note`;
+  $("noteText").value = noteOf(h, dateKey);
+  paintNoteCount();
+  $("noteClear").hidden = !noteOf(h, dateKey);
+  $("noteSave").textContent = "Save note";
+  openModal("noteModal", { focus: "#noteText" });
+}
+function paintNoteCount() {
+  const el = $("noteCount");
+  if (el) el.textContent = `${$("noteText").value.length}/${NOTE_MAX}`;
+}
+function isNoteDirty() {
+  if (!noteCtx) return false;
+  const h = habits.find((x) => x.id === noteCtx.habitId);
+  return $("noteText").value !== noteOf(h, noteCtx.dateKey);
+}
+async function closeNoteEditor(force = false) {
+  if (!force && !$("noteModal").hidden && isNoteDirty()) {
+    const ok = await askConfirm("Discard this unsaved note?", "Discard");
+    if (!ok) return;
+  }
+  noteCtx = null;
+  closeModal("noteModal");
+}
+async function saveNote() {
+  if (!noteCtx) return;
+  const { habitId, dateKey } = noteCtx;
+  const h = habits.find((x) => x.id === habitId);
+  if (!h) { closeNoteEditor(true); return; }
+  const text = $("noteText").value.slice(0, NOTE_MAX).trim();
+  if (text === noteOf(h, dateKey)) { closeNoteEditor(true); return; } // nothing changed
+  const btn = $("noteSave");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const committed = await settleWrite(
+      updateDoc(habitDoc(habitId), { [`notes.${dateKey}`]: text ? text : deleteField(), updatedAt: serverTimestamp() }),
+      "Note saved on this device \u2014 it will sync when you\u2019re back online.");
+    // Latency compensation: reflect the change locally even before the snapshot
+    // (the habits array may have been replaced by a snapshot while we awaited).
+    const hNow = habits.find((x) => x.id === habitId) || h;
+    hNow.notes = { ...(hNow.notes || {}) };
+    if (text) hNow.notes[dateKey] = text; else delete hNow.notes[dateKey];
+    if (committed) toast(text ? "Note saved." : "Note cleared.");
+    closeNoteEditor(true);
+    renderAll();
+  } catch (err) {
+    console.error(err);
+    toast("Couldn\u2019t save the note. " + friendlyErr(err), "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+async function clearNote() {
+  if (!noteCtx) return;
+  const { habitId, dateKey } = noteCtx;
+  const h = habits.find((x) => x.id === habitId);
+  if (!h || !noteOf(h, dateKey)) { closeNoteEditor(true); return; }
+  try {
+    const committed = await settleWrite(
+      updateDoc(habitDoc(habitId), { [`notes.${dateKey}`]: deleteField(), updatedAt: serverTimestamp() }),
+      "Note cleared on this device \u2014 it will sync when you\u2019re back online.");
+    const hNow = habits.find((x) => x.id === habitId) || h;
+    hNow.notes = { ...(hNow.notes || {}) };
+    delete hNow.notes[dateKey];
+    if (committed) toast("Note cleared.");
+    closeNoteEditor(true);
+    renderAll();
+  } catch (err) {
+    console.error(err);
+    toast("Couldn\u2019t clear the note. " + friendlyErr(err), "err");
+  }
+}
 
 /* ================= Habit modal ================= */
 function paintSwatches() {
@@ -1277,6 +1382,13 @@ const ACT_MAX_ACC_M = 65;   // fixes with worse accuracy are rejected outright
 const ACT_MIN_STEP_M = 1.2; // below this a fix is duplicate/noise jitter
 const ACT_MAX_SPEED = { walk: 4.5, cycle: 25 }; // m/s implied-speed caps
 const ACT_LABEL = { walk: "Walk", cycle: "Cycling" };
+const ACT_FOLLOW_ZOOM = 16; // map zoom used once a first fix has been seen
+// Watchdogs keep the UI honest when the GPS never settles (both overridable
+// from tests via window.__PHT_ACT_NOFIX_MS / window.__PHT_ACT_WEAK_MS):
+// - no raw fix at all within actNoFixMs -> troubleshooting help is shown
+// - raw fixes arrive but none accepted within actWeakMs -> signal help is shown
+const actNoFixMs = () => (typeof window !== "undefined" && window.__PHT_ACT_NOFIX_MS) || 12000;
+const actWeakMs = () => (typeof window !== "undefined" && window.__PHT_ACT_WEAK_MS) || 15000;
 const actSessionKey = () => `pht_active_session_${user?.uid || "anon"}`;
 
 let act = null;              // live session (null when idle)
@@ -1284,6 +1396,10 @@ let actWatch = null;         // watchPosition handle
 let actTimer = null;         // 1s UI refresh while a session exists
 let actSaving = false;       // guards the finish button against double-saves
 let actMap = null, actRouteLayer = null;
+let actFollow = true;        // map follows the current position until user pans
+let actMe = null;            // last valid raw fix shown on the map
+let actMeMarker = null, actAccCircle = null;
+let actNoFixTimer = null, actWeakTimer = null;
 let actHistory = [];
 let unsubAct = null;
 
@@ -1313,7 +1429,7 @@ function newAct(type) {
     type, status: "active",
     startedAtMs: now, activeMs: 0, lastT0: now,
     distanceM: 0, maxSpeedMps: 0, curSpeedMps: null, lastAcc: null,
-    accepted: 0, rejected: 0,
+    accepted: 0, rejected: 0, sawFix: false,
     segments: [{ t0: now, pts: [] }],
   };
 }
@@ -1347,24 +1463,67 @@ function acceptFix(prev, fix, type) {
 
 function startActWatch() {
   stopActWatch();
-  actWatch = navigator.geolocation.watchPosition(onActFix, onActGeoError, {
-    enableHighAccuracy: true, timeout: 30000, maximumAge: 0,
-  });
+  try {
+    actWatch = navigator.geolocation.watchPosition(onActFix, onActGeoError, {
+      // maximumAge 0: a cached position must never be passed off as a new fix.
+      enableHighAccuracy: true, timeout: 30000, maximumAge: 0,
+    });
+  } catch (err) {
+    // Some contexts (blocked by policy, sandboxed frames) throw synchronously.
+    actWatch = null;
+    actStatus("This browser blocked location access for the page.", "err");
+    actHelp("Check the browser\u2019s location settings for this site, then press Resume.");
+    return;
+  }
+  // Watchdog 1: no raw fix at all -> surface troubleshooting instead of an
+  // endless "waiting" message. Cleared by the first raw fix.
+  actNoFixTimer = setTimeout(() => {
+    if (act && act.status === "active" && !act.sawFix) {
+      actHelp("Still waiting for a GPS fix. Move outdoors or near a window, make sure system Location is on, and allow up to a minute on a first cold start.");
+    }
+  }, actNoFixMs());
+  // Watchdog 2: raw fixes arrive but none is accurate enough to count.
+  actWeakTimer = setTimeout(() => {
+    if (act && act.status === "active" && act.sawFix && !act.accepted) {
+      actHelp("GPS signal weak. Your position is arriving but is not yet accurate enough to record distance \u2014 points count automatically once accuracy improves (open sky helps).");
+    }
+  }, actWeakMs());
 }
 function stopActWatch() {
   if (actWatch != null) { try { navigator.geolocation.clearWatch(actWatch); } catch { /* ignore */ } actWatch = null; }
+  if (actNoFixTimer) { clearTimeout(actNoFixTimer); actNoFixTimer = null; }
+  if (actWeakTimer) { clearTimeout(actWeakTimer); actWeakTimer = null; }
 }
 function startActTimer() { stopActTimer(); actTimer = setInterval(() => { if (act) renderActivity(); }, 1000); }
 function stopActTimer() { if (actTimer) { clearInterval(actTimer); actTimer = null; } }
 
-function startTracking(typeArg) {
+async function startTracking(typeArg) {
   if (!user || act) return;
-  if (!("geolocation" in navigator)) { actStatus("This browser doesn\u2019t support geolocation.", "err"); return; }
+  if (!("geolocation" in navigator)) { actStatus("This browser doesn\u2019t support geolocation.", "err"); actHelp(""); return; }
   const type = ACT_MAX_SPEED[typeArg] ? typeArg : "walk";
+  // Check the permission state before creating a session: when the browser
+  // says "denied", nothing can be recorded, so we never claim tracking began.
+  let permState = null;
+  try {
+    if (navigator.permissions && navigator.permissions.query) {
+      const st = await navigator.permissions.query({ name: "geolocation" });
+      permState = st && st.state;
+    }
+  } catch { permState = null; } // Safari < 16 has no geolocation query; fall through
+  if (act) return; // a session started while we awaited the query
+  if (permState === "denied") {
+    actStatus("Location permission denied \u2014 recording cannot start.", "err");
+    actHelp("Allow location for this site (address-bar lock icon; iPhone Safari: aA menu \u2192 Website Settings \u2192 Location), then press Start tracking again.");
+    return;
+  }
   act = newAct(type);
+  actFollow = true;
+  resetActVisuals();
   showActRecover(false);
   actHelp("");
-  actStatus(`Waiting for GPS signal\u2026 (${ACT_LABEL[type].toLowerCase()})`);
+  actStatus(permState === "prompt"
+    ? "Requesting location permission\u2026 accept the browser prompt to start recording."
+    : "Waiting for GPS signal\u2026 (the first fix can take up to a minute near windows).");
   persistActSession();
   startActWatch();
   startActTimer();
@@ -1377,16 +1536,24 @@ function onActFix(pos) {
   if (!act || act.status !== "active") return; // paused/saving: never accumulate
   const c = pos.coords;
   const fix = { lat: c.latitude, lng: c.longitude, acc: c.accuracy, t: pos.timestamp || Date.now() };
+  act.sawFix = true;
+  if (actNoFixTimer) { clearTimeout(actNoFixTimer); actNoFixTimer = null; }
+  // The map follows every valid raw fix (even ones later rejected for
+  // accuracy) so the user always sees where the device actually is.
+  updateActMe(fix);
   const seg = actSeg();
   const prev = seg.pts.length ? seg.pts[seg.pts.length - 1] : null;
   const verdict = acceptFix(prev, fix, act.type);
   act.lastAcc = fix.acc;
   if (!verdict.ok) {
     act.rejected++;
+    if (verdict.why === "duplicate") act.curSpeedMps = 0; // standing still: no stale speed
     if (verdict.why === "accuracy") actStatus(`Weak GPS signal (\u00b1${Math.round(fix.acc)} m) \u2014 point skipped.`, "muted");
     persistActSession();
+    renderActivity();
     return;
   }
+  if (actWeakTimer) { clearTimeout(actWeakTimer); actWeakTimer = null; }
   if (verdict.d) {
     act.distanceM += verdict.d;
     act.curSpeedMps = verdict.speed;
@@ -1412,11 +1579,70 @@ function onActGeoError(err) {
     actStatus("Location permission denied \u2014 recording is paused.", "err");
     actHelp("Allow location for this site via the lock icon in the address bar, then press Resume.");
     renderActivity();
+  } else if (err && err.code === 2) {
+    // POSITION_UNAVAILABLE: no usable source (e.g. system location switched off).
+    actStatus("Location unavailable right now \u2014 still trying\u2026", "muted");
+    actHelp("Check that device location / Location Services is turned on, then wait \u2014 recording continues automatically.");
   } else {
-    // POSITION_UNAVAILABLE / TIMEOUT: keep the watch alive; it usually recovers.
-    actStatus("No GPS fix yet \u2014 waiting for a clearer signal\u2026", "muted");
+    // TIMEOUT (3) and anything unknown: keep the watch alive; it usually recovers.
+    actStatus("No GPS fix yet \u2014 still trying\u2026", "muted");
     actHelp("Move outdoors or near a window. Recording continues automatically.");
   }
+}
+
+/* ----- live position marker / accuracy circle / follow mode ----- */
+function zoomForAccuracy(acc) {
+  if (!Number.isFinite(acc)) return ACT_FOLLOW_ZOOM;
+  if (acc > 1000) return 12;
+  if (acc > 200) return 14;
+  return ACT_FOLLOW_ZOOM;
+}
+function setActFollow(on) {
+  actFollow = !!on;
+  if (actFollow && actMe && actMap) {
+    const z = actMap.__actCentered ? actMap.getZoom() : zoomForAccuracy(actMe.acc);
+    try { actMap.setView([actMe.lat, actMe.lng], z); actMap.__actCentered = true; } catch { /* ignore */ }
+  }
+  updateActFollowUI();
+}
+function updateActMe(fix) {
+  if (!Number.isFinite(fix.lat) || !Number.isFinite(fix.lng)) return;
+  actMe = { lat: fix.lat, lng: fix.lng, acc: fix.acc };
+  if (actMap && window.L && typeof window.L.circleMarker === "function") {
+    const L = window.L;
+    const latlng = [actMe.lat, actMe.lng];
+    if (!actMeMarker) {
+      actMeMarker = L.circleMarker(latlng, { radius: 7, color: "#ffffff", weight: 3, fillColor: "#2563eb", fillOpacity: 1 }).addTo(actMap);
+    } else actMeMarker.setLatLng(latlng);
+    if (!Number.isFinite(actMe.acc)) {
+      if (actAccCircle) { actMap.removeLayer(actAccCircle); actAccCircle = null; }
+    } else if (!actAccCircle) {
+      actAccCircle = L.circle(latlng, { radius: actMe.acc, color: "#2563eb", weight: 1, opacity: 0.5, fillColor: "#2563eb", fillOpacity: 0.08 }).addTo(actMap);
+    } else {
+      actAccCircle.setLatLng(latlng); actAccCircle.setRadius(actMe.acc);
+    }
+    if (actFollow && act && act.status === "active") {
+      try {
+        if (!actMap.__actCentered) { actMap.setView(latlng, zoomForAccuracy(actMe.acc)); actMap.__actCentered = true; }
+        else actMap.panTo(latlng);
+      } catch { /* ignore */ }
+    }
+  }
+  updateActFollowUI();
+}
+function resetActVisuals() {
+  if (actMap) {
+    if (actMeMarker) { try { actMap.removeLayer(actMeMarker); } catch { /* ignore */ } }
+    if (actAccCircle) { try { actMap.removeLayer(actAccCircle); } catch { /* ignore */ } }
+    try { actMap.__actCentered = false; } catch { /* ignore */ }
+  }
+  actMeMarker = null; actAccCircle = null; actMe = null;
+  updateActFollowUI();
+}
+function updateActFollowUI() {
+  const btn = $("actRecenter");
+  if (!btn) return;
+  btn.hidden = !(act && act.status === "active" && actMe && !actFollow);
 }
 
 function pauseTracking() {
@@ -1482,6 +1708,7 @@ async function finishTracking() {
     if (committed) toast("Activity saved.", "ok");
     clearActSession();
     act = null;
+    resetActVisuals();
     drawRoute();
     renderActivity();
     actStatus("Not tracking.");
@@ -1502,6 +1729,7 @@ async function cancelTracking() {
   stopActWatch(); stopActTimer();
   clearActSession();
   act = null;
+  resetActVisuals();
   drawRoute();
   renderActivity();
   actStatus("Activity discarded.");
@@ -1549,6 +1777,7 @@ function discardActSession() {
   showActRecover(false);
   clearActSession();
   act = null;
+  resetActVisuals();
   drawRoute();
   renderActivity();
   actStatus("Recovered activity discarded.");
@@ -1574,6 +1803,15 @@ function initActMap() {
   }).addTo(actMap);
   actRouteLayer = window.L.layerGroup().addTo(actMap);
   actMap.setView([20, 0], 2);
+  // Any deliberate map gesture stops follow mode; the "Center on me" button
+  // restores it. (Programmatic moves never fire these events.)
+  const stopFollow = () => setActFollow(false);
+  actMap.on("dragstart", stopFollow);
+  actMap.on("dblclick", stopFollow);
+  el.addEventListener("wheel", stopFollow, { passive: true });
+  el.addEventListener("click", (ev) => {
+    try { if (ev.target && ev.target.closest && ev.target.closest(".leaflet-control-zoom")) stopFollow(); } catch { /* ignore */ }
+  });
   drawRoute();
 }
 function drawRoute() {
@@ -1581,32 +1819,39 @@ function drawRoute() {
   const L = window.L;
   actRouteLayer.clearLayers();
   const all = [];
-  let first = null, last = null;
+  let first = null;
   if (act) {
     for (const s of act.segments) {
       if (!s.pts.length) continue;
       const latlngs = s.pts.map((p) => [p.lat, p.lng]);
       if (!first) first = latlngs[0];
-      last = latlngs[latlngs.length - 1];
       all.push(...latlngs);
       // One polyline per segment: paused/disconnected gaps are never bridged.
       if (latlngs.length > 1) L.polyline(latlngs, { color: "#2563eb", weight: 4, opacity: 0.85 }).addTo(actRouteLayer);
     }
   }
   if (first) L.circleMarker(first, { radius: 6, color: "#059669", fillColor: "#059669", fillOpacity: 1 }).addTo(actRouteLayer);
-  if (last) L.circleMarker(last, { radius: 7, color: "#2563eb", fillColor: "#ffffff", fillOpacity: 1, weight: 3 }).addTo(actRouteLayer);
-  if (all.length) {
-    if (act && act.status === "active" && last) {
-      if (all.length <= 1) actMap.setView(last, 16); else actMap.panTo(last);
-    } else {
-      actMap.fitBounds(L.latLngBounds(all).pad(0.2), { maxZoom: 17 });
-    }
+  // During an active session the camera is driven by updateActMe (follow mode),
+  // so drawRoute must never fight the user; completed/recovered views fit bounds.
+  if (all.length && !(act && act.status === "active")) {
+    actMap.fitBounds(L.latLngBounds(all).pad(0.2), { maxZoom: 17 });
   }
 }
 function onActivityShown() {
   initActMap();
   renderActivity();
-  if (actMap) setTimeout(() => { try { actMap.invalidateSize(); } catch { /* ignore */ } }, 50);
+  if (actMap) {
+    // Coming back from a hidden view: Leaflet needs a size refresh (twice, to
+    // catch the 50ms transition), and follow mode re-centers on the user.
+    const refresh = () => {
+      try { actMap.invalidateSize(); } catch { /* ignore */ }
+      if (actFollow && actMe && act && act.status === "active") {
+        try { actMap.panTo([actMe.lat, actMe.lng]); } catch { /* ignore */ }
+      }
+    };
+    setTimeout(refresh, 50);
+    setTimeout(refresh, 400);
+  }
 }
 
 /* ----- stats + history rendering ----- */
@@ -1640,6 +1885,7 @@ function renderActivity() {
     $("actCur").textContent = act.status === "active" && act.curSpeedMps != null ? fmtSpeed(act.curSpeedMps) : "\u2014";
     $("actAcc").textContent = act.lastAcc != null ? `\u00b1${Math.round(act.lastAcc)} m` : "\u2014";
   }
+  updateActFollowUI();
   renderActHistory();
 }
 function renderActHistory() {
@@ -1860,6 +2106,12 @@ function bind() {
   $("actCancel").onclick = () => cancelTracking();
   $("actRecoverResume").onclick = () => resumeActSession();
   $("actRecoverDiscard").onclick = () => discardActSession();
+  if ($("actRecenter")) $("actRecenter").onclick = () => setActFollow(true);
+  $("noteText").addEventListener("input", paintNoteCount);
+  $("noteText").addEventListener("change", paintNoteCount);
+  $("noteSave").onclick = () => saveNote();
+  $("noteClear").onclick = () => clearNote();
+  $("noteCancel").onclick = () => closeNoteEditor();
   $("actHistory").addEventListener("click", (e) => {
     const b = e.target.closest("[data-act-del]");
     if (b) deleteAct(b.dataset.actDel);
@@ -1896,9 +2148,12 @@ function bind() {
     if (cm) {
       e.stopPropagation();
       if (cm.dataset.closeModal === "habitModal") closeHabitModal();
+      else if (cm.dataset.closeModal === "noteModal") closeNoteEditor();
       else closeModal(cm.dataset.closeModal);
       return;
     }
+    const nt = e.target.closest("[data-note]");
+    if (nt) { e.stopPropagation(); openNoteEditor(nt.dataset.note, nt.dataset.noteDay); return; }
     const t = e.target.closest("[data-toggle]");
     if (t) { e.stopPropagation(); await toggleDone(t.dataset.toggle); return; }
     const ed = e.target.closest("[data-edit]");
@@ -1934,6 +2189,7 @@ function bind() {
       if (frame.id === "accountModal") { closeModal("accountModal"); return; }
       if (frame.id === "habitModal") { closeHabitModal(); return; }
       if (frame.id === "detailModal") { closeDetail(); return; }
+      if (frame.id === "noteModal") { closeNoteEditor(); return; }
     }
   });
   $("closeDetailBtn").onclick = closeDetail;
@@ -1967,11 +2223,12 @@ function bind() {
     else toast("Notifications blocked — in-app reminders will still appear.", "err");
     updateNotifStatus();
   };
-  ["habitModal", "detailModal", "confirmModal", "accountModal"].forEach((id) => {
+  ["habitModal", "detailModal", "confirmModal", "accountModal", "noteModal"].forEach((id) => {
     $(id).addEventListener("click", (e) => {
       if (e.target.id === id) {
         if (id === "habitModal") closeHabitModal();
         else if (id === "detailModal") closeDetail();
+        else if (id === "noteModal") closeNoteEditor();
         else { closeModal(id); if (id === "confirmModal") confirmResolve?.(false); }
       }
     });
@@ -2018,7 +2275,7 @@ function handleAuth(u) {
     // A different account signed in while a session was live: stop recording
     // immediately. The interrupted session stays in this device's storage
     // under the previous uid's key and can only be recovered by that account.
-    stopActWatch(); stopActTimer(); act = null; showActRecover(false);
+    stopActWatch(); stopActTimer(); act = null; showActRecover(false); resetActVisuals();
   }
   user = u;
   if (u) {
@@ -2033,13 +2290,14 @@ function handleAuth(u) {
   } else {
     unsub?.(); clearTimeout(snapTimer); habits = []; detailId = null; _dataLoaded = false;
     unsubAct?.(); actHistory = []; act = null; stopActWatch(); stopActTimer();
+    resetActVisuals(); noteCtx = null;
     showActRecover(false); renderActHistory(); actStatus("Not tracking."); actHelp("");
     cycleData = { enabled: false, entries: [], reminder: false, lead: 3 };
     _sync.pending = 0; // no writes should outlive the session's UI state
     if ($("syncChip")) $("syncChip").hidden = true;
     $("loadingBar").hidden = true;
     showError(null); authErr(null); noteWeakAuthPersistence();
-    for (const m of ["accountModal", "habitModal", "detailModal", "confirmModal"]) { const el = $(m); if (el) el.hidden = true; }
+    for (const m of ["accountModal", "habitModal", "detailModal", "confirmModal", "noteModal"]) { const el = $(m); if (el) el.hidden = true; }
     modalStack.length = 0;
     confirmResolve?.(false); confirmResolve = null;
     habitSnap = null;
@@ -2114,7 +2372,10 @@ if (typeof window !== "undefined" && window.__PHT_TEST__) {
     startTracking, pauseTracking, resumeTracking, finishTracking, cancelTracking,
     restoreActSession, persistActSession, serializeAct, clearActSession,
     getAct: () => act, renderActivity, deleteAct, actSessionKey,
+    setActFollow, getActFollow: () => actFollow, getActMe: () => actMe, getActMap: () => actMap,
+    noteOf, openNoteEditor, closeNoteEditor, saveNote, clearNote, NOTE_MAX,
+    getNoteCtx: () => noteCtx, renderDayDetail,
     heatmapRange, accountCreatedKey, earliestHabitCreatedKey, renderHeatmap, pinHeatmapScroll,
-    resetActForTest() { stopActWatch(); stopActTimer(); act = null; },
+    resetActForTest() { stopActWatch(); stopActTimer(); act = null; resetActVisuals(); },
   });
 }

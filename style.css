@@ -804,6 +804,33 @@ label{display:block;margin-bottom:6px}
   font-variant-numeric:tabular-nums;text-align:center;
 }
 
+/* ---------- Completion notes ---------- */
+.note-btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:34px;height:34px;flex:none;border-radius:var(--r-xs);
+  border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;
+  transition:background .15s,color .15s,border-color .15s;
+}
+.note-btn:hover{background:var(--surface-2);color:var(--text)}
+.note-btn .ic{width:15px;height:15px}
+.note-btn.has-note{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent);background:var(--accent-soft)}
+.dd-notes{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.dd-note{border:1px solid var(--border);border-radius:var(--r-md);padding:9px 12px;background:var(--surface-2)}
+.dd-note-h{display:flex;align-items:center;gap:8px;margin:0 0 4px;font-size:var(--fs-sm);font-weight:650}
+.dd-note-h .habit-dot{width:20px;height:20px;border-radius:5px;font-size:10px}
+.dd-note-text{margin:0;font-size:var(--fs-sm);color:var(--text-2);white-space:pre-wrap;overflow-wrap:anywhere}
+.note-count{display:block;text-align:right;margin-top:4px;font-variant-numeric:tabular-nums}
+button.hist-cell{padding:0;cursor:pointer;flex:none}
+.hist-cell.hasnote{position:relative}
+.hist-cell.hasnote::after{
+  content:"";position:absolute;top:1px;right:1px;width:4px;height:4px;border-radius:50%;
+  background:#fff;box-shadow:0 0 0 1px rgba(0,0,0,.4);
+}
+.recent-list li.hasnote{text-align:left}
+.rc-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.rc-date{font-variant-numeric:tabular-nums}
+.rc-note{margin:6px 0 0;font-weight:500;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+
 /* ---------- Settings ---------- */
 .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
 .settings-grid .card h3{font-size:var(--fs-lg);margin-bottom:4px}
@@ -905,6 +932,8 @@ label{display:block;margin-bottom:6px}
   .check-btn{width:36px;height:36px}
   .check-btn .ic{width:16px;height:16px}
   .act-btn{min-height:44px;padding:10px 12px}
+  .note-btn{width:40px;height:40px}
+  .note-btn .ic{width:16px;height:16px}
   .user-chip{min-height:44px}
   .auth-tab{min-height:44px}
   .days label{min-height:44px;display:inline-flex;align-items:center}
@@ -929,6 +958,9 @@ label{display:block;margin-bottom:6px}
 /* ---------- Activity tracker ---------- */
 .act-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-top:16px}
 .act-stats .stat{padding:12px 14px}
+.act-map-wrap{position:relative;margin-top:12px}
+.act-map-wrap .act-map{margin-top:0}
+.act-recenter{position:absolute;top:10px;right:10px;z-index:800;box-shadow:0 2px 8px rgba(0,0,0,.18)}
 .act-map{height:360px;border:1px solid var(--border);border-radius:var(--r-xl);overflow:hidden;background:var(--surface-2);margin-top:12px}
 .act-map:empty::after{content:"The map appears here once the map library loads and tracking starts.";display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:var(--fs-sm);padding:0 24px;text-align:center}
 .act-entry{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid var(--border)}
