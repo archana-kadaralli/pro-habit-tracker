@@ -2,7 +2,9 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebas
 import {
   getFirestore, initializeFirestore, persistentLocalCache, persistentSingleTabManager,
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
-import { getAuth, GoogleAuthProvider } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import {
+  getAuth, setPersistence, browserLocalPersistence, GoogleAuthProvider,
+} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyD94hiQtNDHlsh5ndNUsqgECBoeJuy_8Uw",
@@ -37,3 +39,17 @@ try {
 export const db = _db;
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+
+// Auth session persistence (web). The SDK default for getAuth() is *local*
+// (IndexedDB) persistence, which survives reloads and browser restarts — but we
+// set it explicitly so the behavior cannot silently change with SDK defaults,
+// and so we can detect when the browser refuses durable storage (private
+// windows, blocked or evicted IndexedDB). This call starts at module load —
+// before script.js can begin any sign-in flow, which awaits this promise first.
+// Resolves to "local" (sessions persist) or "memory" (they will not).
+export const authPersistenceReady = setPersistence(auth, browserLocalPersistence)
+  .then(() => "local")
+  .catch((err) => {
+    console.error("Auth persistence unavailable \u2014 sessions may not survive reloads:", err);
+    return "memory";
+  });

@@ -925,3 +925,17 @@ label{display:block;margin-bottom:6px}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
 }
+
+/* ---------- Activity tracker ---------- */
+.act-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-top:16px}
+.act-stats .stat{padding:12px 14px}
+.act-map{height:360px;border:1px solid var(--border);border-radius:var(--r-xl);overflow:hidden;background:var(--surface-2);margin-top:12px}
+.act-map:empty::after{content:"The map appears here once the map library loads and tracking starts.";display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:var(--fs-sm);padding:0 24px;text-align:center}
+.act-entry{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid var(--border)}
+.act-entry:first-child{border-top:0}
+.act-entry-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.aet-actions{display:flex;gap:6px;flex:none}
+@media (max-width:640px){.act-map{height:280px}}
+
+/* account-aware calendar: hidden leading cells keep weekday alignment */
+.hm-cell.hm-ph{visibility:hidden;pointer-events:none}

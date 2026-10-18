@@ -13,7 +13,7 @@ https://pro-habit-tracker-bb9c8.web.app
 - **Frequencies** — every day, weekdays (Mon–Fri), or specific weekdays; off-days are excluded from streaks and rates
 - **Daily dashboard** — greeting, today's progress, today's habits, week strip, data-driven insights
 - **Reliable streaks** — current streak, longest streak, completion rate, totals and missed days derived from a `completions` date history (no fragile `lastDone` counters); duplicates prevented; timezone-safe local date keys
-- **Calendar heatmap** — GitHub-style activity grid for the last ~15 weeks with per-habit filter and click-a-day details
+- **Calendar heatmap** — GitHub-style activity grid covering your full history since account creation (with a labelled fallback when that date is unavailable) with per-habit filter and click-a-day details
 - **Analytics** — 7-day and 30-day charts, per-habit consistency, category performance (dependency-free, no chart library)
 - **Habit details** — stats, 35-day mini calendar, recent activity, edit/delete/toggle from the detail view
 - **Achievements** — 7/14/30-day streaks, 50/100 completions, strong-week milestones earned from real data

@@ -1,11 +1,11 @@
-import { db, auth, googleProvider } from "./firebase.js";
+import { db, auth, googleProvider, authPersistenceReady } from "./firebase.js";
 import {
   collection, doc, addDoc, updateDoc, deleteDoc,
   onSnapshot, serverTimestamp, arrayUnion, arrayRemove, setDoc, getDoc
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import {
   onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  signInWithPopup, signOut, updateProfile
+  signInWithPopup, signInWithRedirect, getRedirectResult, signOut, updateProfile
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
 /* ================= Utilities ================= */
@@ -248,6 +248,8 @@ let unsub = null;
 let activeView = "dashboard";
 let detailId = null;
 let selectedDay = null;
+let _lastRenderedDayKey = null; // local day key the UI was last fully rendered for (stale-tab guard)
+let _dataLoaded = false; // this session's habits snapshot has arrived (blocks pre-load renders)
 const COLORS = ["#2f6df6", "#0ea5a0", "#8b5cf6", "#e2635f", "#e39a2d", "#3aa655", "#ec6ba8", "#64748b"];
 let pickedColor = COLORS[0];
 
@@ -258,6 +260,39 @@ function habitCreatedKey(h) {
     if (typeof h.createdAt === "string") return h.createdAt.slice(0, 10);
   } catch { /* ignore */ }
   return todayKey();
+}
+/* ================= Calendar range (account-aware) =================
+   The heatmap covers the user's real history from their account creation
+   date (Firebase Auth metadata) through today. If that metadata is
+   unavailable the range falls back to the earliest habit creation date
+   (labelled in the UI), or to the previous 15-week default window when no
+   dated history exists at all. Days before real data existed are never
+   rendered as completions. */
+const HEATMAP_DEFAULT_DAYS = 104; // previous fixed window: 15 weeks including today
+function accountCreatedKey() {
+  const ct = user?.metadata?.creationTime;
+  if (!ct) return null;
+  const d = new Date(ct);
+  return Number.isNaN(d.getTime()) ? null : toKey(d);
+}
+function earliestHabitCreatedKey() {
+  let min = null;
+  for (const h of habits) {
+    const raw = h.createdAt;
+    let k = null;
+    if (raw?.toDate) { try { k = toKey(raw.toDate()); } catch { k = null; } }
+    else if (typeof raw === "string" && /^\d{4}-\d{2}-\d{2}/.test(raw)) k = raw.slice(0, 10);
+    if (k && (!min || k < min)) min = k;
+  }
+  return min;
+}
+function heatmapRange() {
+  const today = todayKey();
+  const acct = accountCreatedKey();
+  if (acct) return { startKey: acct > today ? today : acct, source: "account" };
+  const habit = earliestHabitCreatedKey();
+  if (habit) return { startKey: habit > today ? today : habit, source: "habits" };
+  return { startKey: toKey(addDays(new Date(), -HEATMAP_DEFAULT_DAYS)), source: "default" };
 }
 function isScheduled(h, key) {
   const t = h.frequency?.type || "daily";
@@ -276,6 +311,18 @@ function scheduledKeys(h, fromKey, toKeyStr) {
   const end = parseKey(toKeyStr);
   while (d <= end) { const k = toKey(d); if (isScheduled(h, k)) out.push(k); d = addDays(d, 1); }
   return out;
+}
+const doneOn = (h, k) => (h.completions || []).includes(k); // canonical completion predicate
+// Re-derive every date-dependent view when the local day changed since the
+// last full render (e.g. a backgrounded/suspended tab whose midnight timer
+// was throttled). Without this, one view can re-render for the new day while
+// another still shows the previous day's completion state.
+function syncDay() {
+  const k = todayKey();
+  if (k === _lastRenderedDayKey) return false;
+  _lastRenderedDayKey = k; // set before re-render so nested renderers no-op
+  if (user && _dataLoaded) renderAll();
+  return true;
 }
 function calcHabitStats(h, asOf = todayKey()) {
   const done = new Set(h.completions || []);
@@ -306,7 +353,7 @@ function accountStats(asOf = todayKey()) {
   const todayDone = per.filter((p) => p.s.doneToday).length;
   const schedToday = per.filter((p) => isScheduled(p.h, asOf)).length;
   const weekKeys = [...Array(7)].map((_, i) => toKey(addDays(new Date(), i - 6)));
-  const weekDone = weekKeys.reduce((a, k) => a + habits.reduce((x, h) => x + ((h.completions || []).includes(k) ? 1 : 0), 0), 0);
+  const weekDone = weekKeys.reduce((a, k) => a + habits.reduce((x, h) => x + (doneOn(h, k) ? 1 : 0), 0), 0);
   const weekSched = weekKeys.reduce((a, k) => a + habits.reduce((x, h) => x + (isScheduled(h, k) ? 1 : 0), 0), 0);
   return { per, totalDone, best, todayDone, schedToday, weekRate: weekSched ? Math.round((weekDone / weekSched) * 100) : 0 };
 }
@@ -371,6 +418,29 @@ function setAuthMode(m) {
   $("authPassword").autocomplete = m === "login" ? "current-password" : "new-password";
 }
 function authErr(msg) { const e = $("authError"); e.hidden = !msg; e.textContent = msg || ""; }
+// Human-readable messages for the sign-in failure modes we can actually hit.
+function googleErrMsg(err) {
+  const code = err?.code || "";
+  if (code === "auth/popup-closed-by-user") return "Google sign-in was closed before completing.";
+  if (code === "auth/cancelled-popup-request") return "A sign-in attempt is already in progress. Wait for it to finish, then retry.";
+  if (code === "auth/popup-blocked") return "Your browser blocked the sign-in popup. Allow popups for this site, or try again (we will switch to a full-page redirect).";
+  if (code === "auth/unauthorized-domain") return "This domain is not authorized for Google sign-in. Add it in the Firebase console under Authentication \u2192 Settings \u2192 Authorized domains.";
+  if (code === "auth/operation-not-allowed") return "Google sign-in is not enabled for this project. Enable it in the Firebase console under Authentication \u2192 Sign-in method.";
+  if (code === "auth/account-exists-with-different-credential") return "An account with this email already exists using a different sign-in method. Log in with email and password instead.";
+  if (code === "auth/network-request-failed") return "Network error during Google sign-in. Check your connection and retry.";
+  return friendlyErr(err);
+}
+// If the browser refuses durable auth storage (private mode / blocked or
+// evicted IndexedDB), say so where it matters - on the login screen - instead
+// of letting users wonder why they must log in again next time. Only shown
+// when no other error message occupies the slot.
+function noteWeakAuthPersistence() {
+  authPersistenceReady.then((mode) => {
+    if (mode === "memory" && !user && $("authError") && $("authError").hidden) {
+      authErr("Heads-up: this browser can\u2019t keep you signed in between visits (storage blocked or private mode), so you\u2019ll need to log in again next time.");
+    }
+  }).catch(() => {});
+}
 
 /* ================= Firestore paths ================= */
 const habitsCol = () => collection(db, "users", user.uid, "habits");
@@ -475,7 +545,7 @@ async function toggleDone(id, dateKey = todayKey()) {
   const h = habits.find((x) => x.id === id);
   if (!h) return;
   if (!isScheduled(h, dateKey)) { toast("This habit isn't scheduled for that day."); return; }
-  const has = (h.completions || []).includes(dateKey);
+  const has = doneOn(h, dateKey);
   try {
     const committed = await settleWrite(updateDoc(habitDoc(id), {
       completions: has ? arrayRemove(dateKey) : arrayUnion(dateKey),
@@ -534,10 +604,12 @@ const emptyState = (icon, title, body, cta) =>
 function renderAll() {
   if (!user) return;
   showError(null);
-  renderDashboard(); renderHabitsView(); renderHeatmap(); renderAnalytics(); renderAchievements(); renderSettingsMeta(); renderCycle();
+  _lastRenderedDayKey = todayKey(); // this pass renders the current local day
+  renderDashboard(); renderHabitsView(); renderHeatmap(); renderAnalytics(); renderAchievements(); renderSettingsMeta(); renderCycle(); renderActivity();
   if (detailId) renderDetailBody();
 }
 function renderDashboard() {
+  if (syncDay()) return;
   const hr = new Date().getHours();
   $("greeting").textContent = `${hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening"}${user ? ", " + accountName(user) : ""}`;
   $("dateLine").textContent = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
@@ -586,7 +658,7 @@ function renderDashboard() {
   $("weekStrip").innerHTML = [...Array(7)].map((_, i) => {
     const d = addDays(new Date(), i - 3);
     const k = toKey(d);
-    const done = habits.reduce((a, h) => a + ((h.completions || []).includes(k) ? 1 : 0), 0);
+    const done = habits.reduce((a, h) => a + (doneOn(h, k) ? 1 : 0), 0);
     const sched = habits.reduce((a, h) => a + (isScheduled(h, k) ? 1 : 0), 0);
     const cls = sched && done === sched ? "all-done" : done > 0 ? "some" : "";
     return `<div class="day-cell ${k === todayKey() ? "today" : ""}" title="${k}: ${done}/${sched} completed">
@@ -616,6 +688,7 @@ function filteredHabits() {
   return list.sort(by);
 }
 function renderHabitsView() {
+  if (syncDay()) return;
   const list = filteredHabits();
   $("habitCount").textContent = list.length === habits.length ? String(habits.length) : `${list.length} of ${habits.length}`;
   $("allHabits").innerHTML = list.length ? list.map((p) => habitCardHTML(p.h, p.s)).join("")
@@ -623,7 +696,20 @@ function renderHabitsView() {
       ? emptyState("i-list", "No habits yet", "Create your first habit — give it a schedule and the streak engine does the rest.", "New habit")
       : emptyState("i-search", "No habits match", "Try clearing the search or filters to see all of your habits.");
 }
+let hmGen = 0; // invalidates in-flight progressive fills when a newer render starts
+const HM_SYNC_WEEKS = 104;  // <= 2 years of history renders in one pass
+const HM_CHUNK_WEEKS = 26;  // older history fills in ~half-year steps, one frame each
+const hmSchedule = (cb) => {
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(cb);
+  else setTimeout(cb, 16);
+};
+function pinHeatmapScroll() {
+  const sc = document.querySelector(".hm-scroll");
+  if (sc && sc.scrollWidth > sc.clientWidth) sc.scrollLeft = sc.scrollWidth;
+}
 function renderHeatmap() {
+  if (syncDay()) return;
+  const gen = ++hmGen;
   const sel = $("heatmapHabit").value || "__all";
   const prev = sel;
   $("heatmapHabit").innerHTML = `<option value="__all">All habits</option>` + habits.map((h) => `<option value="${h.id}">${esc(h.name)}</option>`).join("");
@@ -633,39 +719,69 @@ function renderHeatmap() {
   const list = focus === "__all" ? habits : habits.filter((h) => h.id === focus);
   for (const h of list) for (const k of (h.completions || [])) counts[k] = (counts[k] || 0) + 1;
   const max = Math.max(1, ...Object.values(counts));
-  const end = new Date(); const start = addDays(end, -104);
-  // align start to Monday for stable grid
-  const d0 = addDays(start, -((start.getDay() + 6) % 7));
-  let html = "";
-  let months = "";
-  let col = -1, lastMonth = -1;
-  const now = new Date();
+  const range = heatmapRange();
+  const start = parseKey(range.startKey);
+  const end = parseKey(todayKey()); // today at local noon - the walk below is noon-anchored
+  const d0 = addDays(start, -((start.getDay() + 6) % 7)); // Monday-align week rows
+  if ($("heatmapSub")) {
+    const fmt = (k) => parseKey(k).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+    $("heatmapSub").textContent = range.source === "account"
+      ? `Every day since your account was created (${fmt(range.startKey)}) \u2014 real completions only.`
+      : range.source === "habits"
+        ? `Account creation date unavailable \u2014 showing history from your earliest habit (${fmt(range.startKey)}).`
+        : `No dated history yet \u2014 showing the last 15 weeks.`;
+  }
+  const weeks = [];
+  let wk = null;
   for (let d = new Date(d0); d <= end; d = addDays(d, 1)) {
-    if ((d.getDay() + 6) % 7 === 0) { // new column = new week
-      col++;
-      if (d.getMonth() !== lastMonth) {
-        months += `<span>${col === 0 || lastMonth === -1 ? "" : d.toLocaleDateString(undefined, { month: "short" })}</span>`;
-        lastMonth = d.getMonth();
-      } else months += `<span></span>`;
+    const dow = (d.getDay() + 6) % 7;
+    if (!wk || dow === 0) {
+      const m = d.toLocaleDateString(undefined, { month: "short" });
+      wk = { cells: [], month: m, label: weeks.length === 0 || m !== weeks[weeks.length - 1].month ? m : "" };
+      weeks.push(wk);
     }
     const k = toKey(d);
+    if (k < range.startKey) { wk.cells.push(`<span class="hm-cell hm-ph" aria-hidden="true"></span>`); continue; }
     const c = counts[k] || 0;
     const lvl = c === 0 ? 0 : Math.min(4, Math.ceil((c / max) * 4));
-    const future = d > now;
-    html += `<button class="hm-cell ${selectedDay === k ? "sel" : ""}" data-l="${lvl}" data-day="${k}" role="gridcell" aria-label="${k}: ${c} completion${c === 1 ? "" : "s"}" title="${k}: ${c} completion${c === 1 ? "" : "s"}" ${future ? "disabled" : ""}></button>`;
+    wk.cells.push(`<button class="hm-cell ${selectedDay === k ? "sel" : ""}" data-l="${lvl}" data-day="${k}" role="gridcell" aria-label="${k}: ${c} completion${c === 1 ? "" : "s"}" title="${k}: ${c} completion${c === 1 ? "" : "s"}"></button>`);
   }
-  // month label at grid start: put first column's month when col 0
-  if (months.startsWith("<span></span>")) {
-    months = months.replace("<span></span>", `<span>${d0.toLocaleDateString(undefined, { month: "short" })}</span>`);
+  const secHTML = (sec) => sec.map((w) => w.cells.join("")).join("");
+  const secMonths = (sec) => sec.map((w) => `<span>${w.label}</span>`).join("");
+  if (weeks.length <= HM_SYNC_WEEKS) {
+    $("heatmap").innerHTML = secHTML(weeks);
+    $("hmMonths").innerHTML = secMonths(weeks);
+    pinHeatmapScroll();
+  } else {
+    // Long histories: paint the newest chunk first, then prepend older chunks
+    // frame by frame. Every day is still rendered (nothing is silently
+    // omitted) but the main thread is never blocked by one huge insert.
+    const sections = [];
+    for (let i = 0; i < weeks.length; i += HM_CHUNK_WEEKS) sections.push(weeks.slice(i, i + HM_CHUNK_WEEKS));
+    const newest = sections.pop();
+    $("heatmap").innerHTML = secHTML(newest);
+    $("hmMonths").innerHTML = secMonths(newest);
+    pinHeatmapScroll();
+    const queue = sections.reverse();
+    const step = () => {
+      if (gen !== hmGen) return; // superseded by a newer render
+      const sec = queue.shift();
+      if (!sec) return;
+      const sc = document.querySelector(".hm-scroll");
+      const before = sc ? sc.scrollWidth : 0;
+      $("heatmap").insertAdjacentHTML("afterbegin", secHTML(sec));
+      $("hmMonths").insertAdjacentHTML("afterbegin", secMonths(sec));
+      if (sc) sc.scrollLeft += sc.scrollWidth - before; // keep the view anchored
+      hmSchedule(step);
+    };
+    hmSchedule(step);
   }
-  $("hmMonths").innerHTML = months;
-  $("heatmap").innerHTML = html;
   renderDayDetail();
 }
 function renderDayDetail() {
   const box = $("dayDetail");
   if (!selectedDay) { box.innerHTML = `<p class="muted">Click a day above to see which habits were completed.</p>`; return; }
-  const items = habits.filter((h) => (h.completions || []).includes(selectedDay));
+  const items = habits.filter((h) => doneOn(h, selectedDay));
   const missed = calcMissed(selectedDay);
   const dLabel = parseKey(selectedDay).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
   box.innerHTML = `<div class="dd-title">${esc(dLabel)}<span class="pill ${items.length ? "success" : ""}">${items.length} completion${items.length === 1 ? "" : "s"}</span></div>` +
@@ -673,7 +789,7 @@ function renderDayDetail() {
       ? `<div class="day-chips">${items.map((h) => `<span class="day-chip"><span class="habit-dot" style="background:${esc(h.color)}" aria-hidden="true">${esc(h.icon)}</span>${esc(h.name)} <span class="muted">${esc(h.category)}</span></span>`).join("")}</div>`
       : `<p class="muted">${missed ? `No completions — ${missed} scheduled habit${missed === 1 ? " was" : "s were"} missed.` : "No completions were scheduled for this day."}</p>`);
 }
-function calcMissed(key) { return habits.filter((h) => isScheduled(h, key) && !(h.completions || []).includes(key) && key !== todayKey()).length; }
+function calcMissed(key) { return habits.filter((h) => isScheduled(h, key) && !doneOn(h, key) && key !== todayKey()).length; }
 function renderAnalytics() {
   const st = accountStats();
   const cards = [
@@ -687,7 +803,7 @@ function renderAnalytics() {
     <div class="k">${c.k}</div><div class="v">${esc(c.v)}</div>
   </div>`).join("");
   // last 7 days bars (absolute completions)
-  const wk = [...Array(7)].map((_, i) => { const d = addDays(new Date(), i - 6); return { k: toKey(d), label: d.toLocaleDateString(undefined, { weekday: "short" }), n: habits.reduce((a, h) => a + ((h.completions || []).includes(toKey(d)) ? 1 : 0), 0) }; });
+  const wk = [...Array(7)].map((_, i) => { const d = addDays(new Date(), i - 6); return { k: toKey(d), label: d.toLocaleDateString(undefined, { weekday: "short" }), n: habits.reduce((a, h) => a + (doneOn(h, toKey(d)) ? 1 : 0), 0) }; });
   const wmax = Math.max(1, ...wk.map((x) => x.n));
   $("chartWeek").innerHTML = wk.map((x) => `<div class="bar" title="${x.label}: ${x.n} completion${x.n === 1 ? "" : "s"}">
     <span class="bar-plot"><i style="height:${Math.max(3, (x.n / wmax) * 110)}px"></i></span>
@@ -696,12 +812,12 @@ function renderAnalytics() {
   const wTotal = wk.reduce((a, x) => a + x.n, 0);
   const bestDay = wk.reduce((m, x) => (x.n > m.n ? x : m), wk[0]);
   $("chartWeekNote").textContent = wTotal
-    ? `${wTotal} completions this week · strongest day: ${bestDay.label} (${bestDay.n})`
+    ? `${wTotal} completions in the last 7 days · strongest day: ${bestDay.label} (${bestDay.n})`
     : "No completions recorded in the last 7 days.";
   // last 30 days in 6 buckets of 5 days
   const buckets = [...Array(6)].map((_, b) => {
     const from = addDays(new Date(), -(29 - b * 5) - 4), to = addDays(new Date(), -(29 - b * 5));
-    let n = 0; for (let d = new Date(from); d <= to; d = addDays(d, 1)) n += habits.reduce((a, h) => a + ((h.completions || []).includes(toKey(d)) ? 1 : 0), 0);
+    let n = 0; for (let d = new Date(from); d <= to; d = addDays(d, 1)) n += habits.reduce((a, h) => a + (doneOn(h, toKey(d)) ? 1 : 0), 0);
     return { label: `${to.getDate()}/${to.getMonth() + 1}`, n };
   });
   const bmax = Math.max(1, ...buckets.map((x) => x.n));
@@ -755,6 +871,7 @@ function renderSettingsMeta() {
 
 /* ================= Detail modal ================= */
 function renderDetailBody() {
+  if (syncDay()) return;
   const h = habits.find((x) => x.id === detailId);
   if (!h) return;
   const s = calcHabitStats(h);
@@ -785,7 +902,7 @@ function renderDetailBody() {
     <div class="detail-section">
       <h4>Last 35 days</h4>
       <div class="hist-grid">${last35.map((k) => {
-        const done = (h.completions || []).includes(k);
+        const done = doneOn(h, k);
         const sched = isScheduled(h, k);
         const missed = !done && sched && k !== todayKey();
         const cls = done ? "done" : missed ? "missed" : sched ? "sched" : "";
@@ -1137,6 +1254,437 @@ function requestLocation() {
   );
 }
 
+/* ================= Activity tracker (GPS) =================
+   A real walk/ride tracker on top of the browser Geolocation API:
+   - start / pause / resume / finish / cancel with explicit user control
+   - live stats: distance (geodesic), active time, average + current speed,
+     GPS accuracy
+   - noisy fixes are rejected, never counted (see acceptFix)
+   - paused time and the gap it leaves are excluded from distance, and each
+     resume starts a NEW polyline segment so the route never draws a straight
+     line across a gap
+   - finished activities are written to users/{uid}/activities/{id} with a
+     client-generated id, so retrying a save can never duplicate one
+   - an in-progress session is mirrored to localStorage (this device only) so
+     an interrupted activity can be recovered after a reload
+
+   Honest limitations (also surfaced in the UI): a web page can only record
+   while it is open and the screen is on. There is no background tracking, and
+   points during any closed period are permanently lost — recovery resumes with
+   a fresh segment and never fabricates positions. */
+
+const ACT_MAX_ACC_M = 65;   // fixes with worse accuracy are rejected outright
+const ACT_MIN_STEP_M = 1.2; // below this a fix is duplicate/noise jitter
+const ACT_MAX_SPEED = { walk: 4.5, cycle: 25 }; // m/s implied-speed caps
+const ACT_LABEL = { walk: "Walk", cycle: "Cycling" };
+const actSessionKey = () => `pht_active_session_${user?.uid || "anon"}`;
+
+let act = null;              // live session (null when idle)
+let actWatch = null;         // watchPosition handle
+let actTimer = null;         // 1s UI refresh while a session exists
+let actSaving = false;       // guards the finish button against double-saves
+let actMap = null, actRouteLayer = null;
+let actHistory = [];
+let unsubAct = null;
+
+const actCol = () => collection(db, "users", user.uid, "activities");
+const actDocRef = (id) => doc(db, "users", user.uid, "activities", id);
+const actSeg = () => act.segments[act.segments.length - 1];
+
+function actStatus(msg, kind = "muted") {
+  const el = $("actStatus");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = `loc-status ${kind} small`;
+}
+function actHelp(msg) {
+  const el = $("actHelp");
+  if (!el) return;
+  el.hidden = !msg;
+  el.textContent = msg || "";
+}
+function showActRecover(on) { const el = $("actRecover"); if (el) el.hidden = !on; }
+
+function newAct(type) {
+  const now = Date.now();
+  return {
+    v: 1,
+    id: `act_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    type, status: "active",
+    startedAtMs: now, activeMs: 0, lastT0: now,
+    distanceM: 0, maxSpeedMps: 0, curSpeedMps: null, lastAcc: null,
+    accepted: 0, rejected: 0,
+    segments: [{ t0: now, pts: [] }],
+  };
+}
+
+// Great-circle distance in metres (haversine on a spherical earth).
+function haversineM(a, b) {
+  const R = 6371000, rad = (x) => (x * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+
+// Decide whether a raw GPS fix may be trusted and may add distance:
+// - unusable coordinates            -> rejected ["invalid"]
+// - accuracy worse than ACT_MAX_ACC -> rejected ["accuracy"] (indoor/urban noise)
+// - < ACT_MIN_STEP_M from previous  -> rejected ["duplicate"] (standing still)
+// - non-increasing timestamps       -> rejected ["time"]
+// - implied speed above the activity cap -> rejected ["jump"] (teleports)
+function acceptFix(prev, fix, type) {
+  if (!Number.isFinite(fix.lat) || !Number.isFinite(fix.lng)) return { ok: false, why: "invalid" };
+  if (!Number.isFinite(fix.acc) || fix.acc > ACT_MAX_ACC_M) return { ok: false, why: "accuracy" };
+  if (!prev) return { ok: true };
+  const d = haversineM(prev, fix);
+  if (d < ACT_MIN_STEP_M) return { ok: false, why: "duplicate" };
+  const dt = (fix.t - prev.t) / 1000;
+  if (dt <= 0) return { ok: false, why: "time" };
+  const speed = d / dt;
+  if (speed > ACT_MAX_SPEED[type]) return { ok: false, why: "jump" };
+  return { ok: true, d, speed };
+}
+
+function startActWatch() {
+  stopActWatch();
+  actWatch = navigator.geolocation.watchPosition(onActFix, onActGeoError, {
+    enableHighAccuracy: true, timeout: 30000, maximumAge: 0,
+  });
+}
+function stopActWatch() {
+  if (actWatch != null) { try { navigator.geolocation.clearWatch(actWatch); } catch { /* ignore */ } actWatch = null; }
+}
+function startActTimer() { stopActTimer(); actTimer = setInterval(() => { if (act) renderActivity(); }, 1000); }
+function stopActTimer() { if (actTimer) { clearInterval(actTimer); actTimer = null; } }
+
+function startTracking(typeArg) {
+  if (!user || act) return;
+  if (!("geolocation" in navigator)) { actStatus("This browser doesn\u2019t support geolocation.", "err"); return; }
+  const type = ACT_MAX_SPEED[typeArg] ? typeArg : "walk";
+  act = newAct(type);
+  showActRecover(false);
+  actHelp("");
+  actStatus(`Waiting for GPS signal\u2026 (${ACT_LABEL[type].toLowerCase()})`);
+  persistActSession();
+  startActWatch();
+  startActTimer();
+  initActMap();
+  drawRoute();
+  renderActivity();
+}
+
+function onActFix(pos) {
+  if (!act || act.status !== "active") return; // paused/saving: never accumulate
+  const c = pos.coords;
+  const fix = { lat: c.latitude, lng: c.longitude, acc: c.accuracy, t: pos.timestamp || Date.now() };
+  const seg = actSeg();
+  const prev = seg.pts.length ? seg.pts[seg.pts.length - 1] : null;
+  const verdict = acceptFix(prev, fix, act.type);
+  act.lastAcc = fix.acc;
+  if (!verdict.ok) {
+    act.rejected++;
+    if (verdict.why === "accuracy") actStatus(`Weak GPS signal (\u00b1${Math.round(fix.acc)} m) \u2014 point skipped.`, "muted");
+    persistActSession();
+    return;
+  }
+  if (verdict.d) {
+    act.distanceM += verdict.d;
+    act.curSpeedMps = verdict.speed;
+    if (verdict.speed > act.maxSpeedMps) act.maxSpeedMps = verdict.speed;
+  } else {
+    act.curSpeedMps = 0;
+  }
+  seg.pts.push(fix);
+  act.accepted++;
+  actHelp("");
+  actStatus(`Tracking ${ACT_LABEL[act.type].toLowerCase()} \u2014 ${act.accepted} GPS point${act.accepted === 1 ? "" : "s"} recorded.`);
+  persistActSession();
+  drawRoute();
+  renderActivity();
+}
+
+function onActGeoError(err) {
+  if (!act) return;
+  if (err && err.code === 1) { // permission denied
+    if (act.status === "active") { act.status = "paused"; if (act.lastT0) { act.activeMs += Date.now() - act.lastT0; act.lastT0 = null; } }
+    stopActWatch();
+    persistActSession();
+    actStatus("Location permission denied \u2014 recording is paused.", "err");
+    actHelp("Allow location for this site via the lock icon in the address bar, then press Resume.");
+    renderActivity();
+  } else {
+    // POSITION_UNAVAILABLE / TIMEOUT: keep the watch alive; it usually recovers.
+    actStatus("No GPS fix yet \u2014 waiting for a clearer signal\u2026", "muted");
+    actHelp("Move outdoors or near a window. Recording continues automatically.");
+  }
+}
+
+function pauseTracking() {
+  if (!act || act.status !== "active") return;
+  act.status = "paused";
+  if (act.lastT0) { act.activeMs += Date.now() - act.lastT0; act.lastT0 = null; }
+  act.curSpeedMps = null;
+  stopActWatch();
+  persistActSession();
+  actStatus("Paused \u2014 distance and active time are not recorded while paused.");
+  actHelp("");
+  drawRoute();
+  renderActivity();
+}
+
+function resumeTracking() {
+  if (!act || act.status !== "paused") return;
+  act.status = "active";
+  act.lastT0 = Date.now();
+  act.segments.push({ t0: Date.now(), pts: [] }); // gap stays a gap: new segment
+  persistActSession();
+  startActWatch();
+  startActTimer();
+  actStatus("Tracking resumed \u2014 the pause shows as a gap in the route.");
+  actHelp("");
+  renderActivity();
+}
+
+async function finishTracking() {
+  if (!act || actSaving) return;
+  const points = act.segments.reduce((n, s) => n + s.pts.length, 0);
+  if (!points) {
+    actStatus("No GPS points recorded yet \u2014 nothing to save. Cancel to discard this session.", "err");
+    return;
+  }
+  actSaving = true;
+  try {
+    if (act.status === "active" && act.lastT0) { act.activeMs += Date.now() - act.lastT0; act.lastT0 = null; }
+    act.status = "saving";
+    stopActWatch(); stopActTimer();
+    renderActivity();
+    const activeMs = Math.max(1000, act.activeMs);
+    const payload = {
+      type: act.type,
+      startedAtMs: act.startedAtMs,
+      endedAtMs: Date.now(),
+      durationMs: activeMs,
+      distanceM: Math.round(act.distanceM),
+      avgSpeedMps: act.distanceM / (activeMs / 1000),
+      maxSpeedMps: act.maxSpeedMps,
+      pointCount: points,
+      rejectedCount: act.rejected,
+      // Firestore forbids nested arrays, so each segment wraps its points.
+      segments: act.segments.filter((s) => s.pts.length).map((s) => ({ t0: s.t0, pts: s.pts })),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    // Fixed id + merge: re-running a failed finish can never duplicate the
+    // activity, and an offline retry lands on the same document.
+    const committed = await settleWrite(
+      setDoc(actDocRef(act.id), payload, { merge: true }),
+      "Activity saved on this device \u2014 it will sync when you\u2019re back online.");
+    if (committed) toast("Activity saved.", "ok");
+    clearActSession();
+    act = null;
+    drawRoute();
+    renderActivity();
+    actStatus("Not tracking.");
+  } catch (err) {
+    console.error(err);
+    act.status = "paused";
+    actStatus("Couldn\u2019t save the activity. " + friendlyErr(err), "err");
+    renderActivity();
+  } finally {
+    actSaving = false;
+  }
+}
+
+async function cancelTracking() {
+  if (!act || actSaving) return;
+  const ok = await askConfirm("Discard this activity? The recorded route will not be saved.", "Discard");
+  if (!ok) return;
+  stopActWatch(); stopActTimer();
+  clearActSession();
+  act = null;
+  drawRoute();
+  renderActivity();
+  actStatus("Activity discarded.");
+}
+
+/* ----- session mirror (this device only) ----- */
+function clearActSession() { try { localStorage.removeItem(actSessionKey()); } catch { /* ignore */ } }
+function serializeAct() {
+  let segs = act.segments;
+  const count = segs.reduce((n, s) => n + s.pts.length, 0);
+  if (count > 4000) {
+    // Bound localStorage size for very long sessions: thin older segments
+    // (always keeping their first/last points).
+    segs = segs.map((s, i) => i === segs.length - 1 ? s : {
+      t0: s.t0,
+      pts: s.pts.filter((_, j) => j % 2 === 0 || j === s.pts.length - 1),
+    });
+  }
+  return { ...act, segments: segs };
+}
+function persistActSession() {
+  if (!act) return;
+  try { localStorage.setItem(actSessionKey(), JSON.stringify(serializeAct())); } catch { /* quota: live session still works */ }
+}
+function restoreActSession() {
+  if (!user || act) return;
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(actSessionKey()) || "null"); } catch { raw = null; }
+  if (!raw || raw.v !== 1 || !ACT_MAX_SPEED[raw.type] || !Array.isArray(raw.segments)) return;
+  if (raw.status === "active" && raw.lastT0) raw.activeMs += Date.now() - raw.lastT0;
+  raw.status = "paused"; // recovery always starts paused; never fabricate the gap
+  raw.lastT0 = null;
+  raw.curSpeedMps = null;
+  act = raw;
+  showActRecover(true);
+  actStatus("Recovered an unfinished activity from this device. Resume to continue (the closed period stays a gap), or discard it.");
+  renderActivity();
+}
+function resumeActSession() {
+  if (!act) return;
+  showActRecover(false);
+  resumeTracking();
+}
+function discardActSession() {
+  showActRecover(false);
+  clearActSession();
+  act = null;
+  drawRoute();
+  renderActivity();
+  actStatus("Recovered activity discarded.");
+}
+
+/* ----- map (progressive enhancement; tracking works without it) ----- */
+function initActMap() {
+  const el = $("actMap");
+  if (!el) return;
+  if (typeof window === "undefined" || !window.L || typeof window.L.map !== "function") {
+    const n = $("actMapNote");
+    if (n) {
+      n.hidden = false;
+      n.textContent = "The map library couldn\u2019t load (it needs a network connection the first time). Tracking, distance and history still work.";
+    }
+    return;
+  }
+  if (actMap) return;
+  actMap = window.L.map(el, { zoomControl: true, attributionControl: true });
+  window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(actMap);
+  actRouteLayer = window.L.layerGroup().addTo(actMap);
+  actMap.setView([20, 0], 2);
+  drawRoute();
+}
+function drawRoute() {
+  if (!actMap || !actRouteLayer) return;
+  const L = window.L;
+  actRouteLayer.clearLayers();
+  const all = [];
+  let first = null, last = null;
+  if (act) {
+    for (const s of act.segments) {
+      if (!s.pts.length) continue;
+      const latlngs = s.pts.map((p) => [p.lat, p.lng]);
+      if (!first) first = latlngs[0];
+      last = latlngs[latlngs.length - 1];
+      all.push(...latlngs);
+      // One polyline per segment: paused/disconnected gaps are never bridged.
+      if (latlngs.length > 1) L.polyline(latlngs, { color: "#2563eb", weight: 4, opacity: 0.85 }).addTo(actRouteLayer);
+    }
+  }
+  if (first) L.circleMarker(first, { radius: 6, color: "#059669", fillColor: "#059669", fillOpacity: 1 }).addTo(actRouteLayer);
+  if (last) L.circleMarker(last, { radius: 7, color: "#2563eb", fillColor: "#ffffff", fillOpacity: 1, weight: 3 }).addTo(actRouteLayer);
+  if (all.length) {
+    if (act && act.status === "active" && last) {
+      if (all.length <= 1) actMap.setView(last, 16); else actMap.panTo(last);
+    } else {
+      actMap.fitBounds(L.latLngBounds(all).pad(0.2), { maxZoom: 17 });
+    }
+  }
+}
+function onActivityShown() {
+  initActMap();
+  renderActivity();
+  if (actMap) setTimeout(() => { try { actMap.invalidateSize(); } catch { /* ignore */ } }, 50);
+}
+
+/* ----- stats + history rendering ----- */
+const fmtDist = (m) => (m >= 1000 ? (m / 1000).toFixed(2) + " km" : Math.round(m) + " m");
+function fmtDur(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  return h ? `${h}:${pad(m)}:${pad(ss)}` : `${pad(m)}:${pad(ss)}`;
+}
+const fmtSpeed = (mps) => (mps * 3.6).toFixed(1) + " km/h";
+
+function renderActivity() {
+  if (!$("actType")) return;
+  const has = !!act;
+  $("actType").disabled = has;
+  $("actStart").hidden = has;
+  $("actPause").hidden = !has;
+  $("actFinish").hidden = !has;
+  $("actCancel").hidden = !has;
+  $("actStats").hidden = !has;
+  if (has) {
+    const live = act.status === "active" && act.lastT0 ? Date.now() - act.lastT0 : 0;
+    const ms = act.activeMs + live;
+    $("actPause").textContent = act.status === "active" ? "Pause" : act.status === "saving" ? "Saving\u2026" : "Resume";
+    $("actPause").disabled = act.status === "saving" || actSaving;
+    $("actFinish").disabled = actSaving;
+    $("actCancel").disabled = actSaving;
+    $("actDistance").textContent = fmtDist(act.distanceM);
+    $("actTime").textContent = fmtDur(ms);
+    $("actAvg").textContent = ms > 3000 && act.distanceM > 0 ? fmtSpeed(act.distanceM / (ms / 1000)) : "\u2014";
+    $("actCur").textContent = act.status === "active" && act.curSpeedMps != null ? fmtSpeed(act.curSpeedMps) : "\u2014";
+    $("actAcc").textContent = act.lastAcc != null ? `\u00b1${Math.round(act.lastAcc)} m` : "\u2014";
+  }
+  renderActHistory();
+}
+function renderActHistory() {
+  const el = $("actHistory");
+  if (!el) return;
+  if (!user) { el.innerHTML = ""; return; }
+  if (!actHistory.length) {
+    el.innerHTML = '<p class="muted small">No activities yet. Start a walk or ride to record your first route.</p>';
+    return;
+  }
+  el.innerHTML = actHistory.map((a) => `
+    <div class="act-entry">
+      <div class="act-entry-main">
+        <strong>${ACT_LABEL[a.type] || "Activity"}</strong>
+        <span class="muted small">${esc(new Date(a.startedAtMs).toLocaleString())} \u00b7 ${fmtDur(a.durationMs || 0)} \u00b7 ${fmtDist(a.distanceM || 0)}${a.avgSpeedMps ? " \u00b7 avg " + fmtSpeed(a.avgSpeedMps) : ""}</span>
+      </div>
+      <button class="icon-btn ghost" type="button" data-act-del="${esc(a.id)}" aria-label="Delete activity"><svg class="ic ic-sm"><use href="#i-trash"/></svg></button>
+    </div>`).join("");
+}
+async function deleteAct(id) {
+  const ok = await askConfirm("Delete this activity and its route? This cannot be undone.", "Delete");
+  if (!ok) return;
+  try {
+    const committed = await settleWrite(
+      deleteDoc(actDocRef(id)),
+      "Deletion saved on this device \u2014 it will sync when you\u2019re back online.");
+    if (committed) toast("Activity deleted.");
+  } catch (err) { console.error(err); toast(friendlyErr(err), "err"); }
+}
+function subscribeAct() {
+  unsubAct?.();
+  actHistory = [];
+  if (!user) return;
+  unsubAct = onSnapshot(actCol(), (snap) => {
+    actHistory = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((a) => a && ACT_MAX_SPEED[a.type] && Number.isFinite(a.startedAtMs))
+      .sort((a, b) => b.startedAtMs - a.startedAtMs);
+    renderActHistory();
+  }, (err) => {
+    console.error(err);
+    showError(friendlyErr(err) + " (Activity history needs Firestore rules for users/{uid}/activities.)");
+  });
+}
+
 /* ================= Reminders =================
    These are page-context timers only. A website cannot execute JavaScript after
    its tab/page has been closed, so reminders fire only while this page is
@@ -1171,7 +1719,7 @@ function checkHabitReminder() {
   const day = todayKey();
   if (localStorage.getItem(firedKey(user.uid, now, day))) return;
   localStorage.setItem(firedKey(user.uid, now, day), "1");
-  const left = habits.filter((h) => isScheduled(h, day) && !(h.completions || []).includes(day));
+  const left = habits.filter((h) => isScheduled(h, day) && !doneOn(h, day));
   const msg = left.length ? `You still have ${left.length} habit(s) to complete today.` : "All habits done for today. Nice work!";
   if ("Notification" in window && Notification.permission === "granted") { try { new Notification("Habit reminder", { body: msg }); } catch { toast(msg); } }
   else toast(msg);
@@ -1209,6 +1757,9 @@ function go(view) {
   $("appShell").querySelector(".sidebar").classList.remove("open");
   $("navScrim").hidden = true;
   $("menuBtn").setAttribute("aria-expanded", "false");
+  if (user && _dataLoaded) syncDay(); // re-derive views if the local day changed since the last render
+  if (view === "activity") onActivityShown();
+  if (view === "calendar") pinHeatmapScroll();
 }
 
 /* ================= Events ================= */
@@ -1222,6 +1773,9 @@ function bind() {
     if (pw.length < 6) return authErr("Password must be at least 6 characters.");
     authErr(null); $("authSubmit").disabled = true;
     try {
+      // Persistence is configured before any sign-in so a just-signed-in
+      // session actually survives reloads (see firebase.js).
+      await authPersistenceReady.catch(() => {});
       if (authMode === "login") await signInWithEmailAndPassword(auth, email, pw);
       else await createUserWithEmailAndPassword(auth, email, pw);
     } catch (err) { console.error(err); authErr(friendlyErr(err)); }
@@ -1231,11 +1785,27 @@ function bind() {
   $("googleBtn").onclick = async () => {
     if (googleSigningIn) return;
     googleSigningIn = true;
-    $("googleBtn").disabled = true;
+    const gbtn = $("googleBtn");
+    gbtn.disabled = true;
+    gbtn.classList.add("loading");
     authErr(null);
-    try { await signInWithPopup(auth, googleProvider); }
-    catch (err) { console.error(err); authErr(err?.code === "auth/popup-closed-by-user" ? "Google sign-in was closed before completing." : friendlyErr(err)); }
-    finally { googleSigningIn = false; $("googleBtn").disabled = false; }
+    try {
+      await authPersistenceReady.catch(() => {});
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      console.error(err);
+      // Popups are unavailable (blocked, iOS/webview restrictions): use the
+      // supported full-page redirect flow, completed by getRedirectResult on
+      // the next load.
+      if (err?.code === "auth/popup-blocked" || err?.code === "auth/operation-not-supported-in-this-environment") {
+        toast("Popup unavailable \u2014 switching to redirect sign-in\u2026");
+        try { await signInWithRedirect(auth, googleProvider); }
+        catch (err2) { console.error(err2); authErr(googleErrMsg(err2)); }
+      } else {
+        authErr(googleErrMsg(err));
+      }
+    }
+    finally { googleSigningIn = false; gbtn.disabled = false; gbtn.classList.remove("loading"); }
   };
   $("logoutBtn").onclick = () => confirmLogout();
   $("accountBtn").onclick = () => {
@@ -1284,6 +1854,16 @@ function bind() {
   };
   $("locBtn").onclick = () => requestLocation();
   $("locRetryBtn").onclick = () => requestLocation();
+  $("actStart").onclick = () => startTracking($("actType").value);
+  $("actPause").onclick = () => { if (!act) return; if (act.status === "active") pauseTracking(); else resumeTracking(); };
+  $("actFinish").onclick = () => finishTracking();
+  $("actCancel").onclick = () => cancelTracking();
+  $("actRecoverResume").onclick = () => resumeActSession();
+  $("actRecoverDiscard").onclick = () => discardActSession();
+  $("actHistory").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-act-del]");
+    if (b) deleteAct(b.dataset.actDel);
+  });
   document.querySelectorAll(".nav-item").forEach((b) => { b.onclick = () => go(b.dataset.nav); });
   const setNav = (open) => {
     document.querySelector(".sidebar").classList.toggle("open", open);
@@ -1408,6 +1988,7 @@ let snapTimer = null;
 function subscribe() {
   unsub?.();
   clearTimeout(snapTimer);
+  _dataLoaded = false; // this session's habits have not been delivered yet
   $("loadingBar").hidden = false;
   showError(null);
   const waitMs = (typeof window !== "undefined" && window.__PHT_SNAP_TIMEOUT) || 12000;
@@ -1420,6 +2001,7 @@ function subscribe() {
     habits = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     // Backfill safety: old docs used lastDone/streak without completions
     habits = habits.map((h) => ({ completions: [], ...h }));
+    _dataLoaded = true;
     $("loadingBar").hidden = true;
     showError(null);
     renderAll();
@@ -1431,21 +2013,32 @@ function subscribe() {
   });
 }
 function handleAuth(u) {
+  const prevUid = user?.uid || null;
+  if (act && u && prevUid && prevUid !== u.uid) {
+    // A different account signed in while a session was live: stop recording
+    // immediately. The interrupted session stays in this device's storage
+    // under the previous uid's key and can only be recovered by that account.
+    stopActWatch(); stopActTimer(); act = null; showActRecover(false);
+  }
   user = u;
   if (u) {
     setAuthState("app");
     renderAccountInfo(u);
     subscribe(); go("dashboard");
     loadCycle();
+    subscribeAct();           // activity history for this account only
+    restoreActSession();      // offer recovery of an interrupted GPS session
     pruneFiredReminderKeys(); // tidy this user's expired reminder markers
     noteOnline(); paintSyncChip();
   } else {
-    unsub?.(); clearTimeout(snapTimer); habits = []; detailId = null;
+    unsub?.(); clearTimeout(snapTimer); habits = []; detailId = null; _dataLoaded = false;
+    unsubAct?.(); actHistory = []; act = null; stopActWatch(); stopActTimer();
+    showActRecover(false); renderActHistory(); actStatus("Not tracking."); actHelp("");
     cycleData = { enabled: false, entries: [], reminder: false, lead: 3 };
     _sync.pending = 0; // no writes should outlive the session's UI state
     if ($("syncChip")) $("syncChip").hidden = true;
     $("loadingBar").hidden = true;
-    showError(null); authErr(null);
+    showError(null); authErr(null); noteWeakAuthPersistence();
     for (const m of ["accountModal", "habitModal", "detailModal", "confirmModal"]) { const el = $(m); if (el) el.hidden = true; }
     modalStack.length = 0;
     confirmResolve?.(false); confirmResolve = null;
@@ -1478,17 +2071,22 @@ if (typeof window !== "undefined") {
 } else {
   onAuthStateChanged(auth, handleAuth, handleAuthError);
 }
+// Completes a Google sign-in started via signInWithRedirect (the fallback used
+// when popups are blocked). Must run on every load; resolves to null when no
+// redirect is pending. Failures surface on the auth screen while signed out.
+getRedirectResult(auth)
+  .then((res) => { if (res && res.user) toast("Signed in with Google.", "ok"); })
+  .catch((err) => {
+    console.error(err);
+    if (!$("appShell") || $("appShell").hidden) authErr(googleErrMsg(err));
+  });
 applyTheme(themeStore);
 setAuthMode("login");
 bind();
 
 // Re-render when the calendar day rolls over (stale "today" after midnight).
-let _lastDayKey = todayKey();
 const _dayCheckMs = () => (typeof window !== "undefined" && window.__PHT_DAY_CHECK_MS) || 30000;
-let _dayTimer = setInterval(() => {
-  const k = todayKey();
-  if (k !== _lastDayKey) { _lastDayKey = k; if (user) { renderAll(); evaluateCycleReminder(); } }
-}, _dayCheckMs());
+let _dayTimer = setInterval(() => { if (syncDay() && user) evaluateCycleReminder(); }, _dayCheckMs());
 
 // Catch reminders and connectivity changes when the tab becomes active again
 // (timers are throttled while hidden, so re-check on focus/visibility).
@@ -1496,6 +2094,7 @@ if (typeof document !== "undefined") {
   const _onVisible = () => {
     if (document.visibilityState !== "visible") return;
     noteOnline(); paintSyncChip();
+    syncDay();
     checkHabitReminder(); evaluateCycleReminder();
   };
   document.addEventListener("visibilitychange", _onVisible);
@@ -1510,5 +2109,12 @@ if (typeof window !== "undefined" && window.__PHT_TEST__) {
     settleWrite, checkHabitReminder, evaluateCycleReminder,
     pruneFiredReminderKeys, cycleRemindKey, firedKey, paintSyncChip,
     saveCycle, cycleOfflineNote,
+    // activity tracker internals for the GPS test suites
+    haversineM, acceptFix, fmtDist, fmtDur, fmtSpeed,
+    startTracking, pauseTracking, resumeTracking, finishTracking, cancelTracking,
+    restoreActSession, persistActSession, serializeAct, clearActSession,
+    getAct: () => act, renderActivity, deleteAct, actSessionKey,
+    heatmapRange, accountCreatedKey, earliestHabitCreatedKey, renderHeatmap, pinHeatmapScroll,
+    resetActForTest() { stopActWatch(); stopActTimer(); act = null; },
   });
 }
