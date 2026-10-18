@@ -8,6 +8,11 @@ service cloud.firestore {
       match /habits/{habitId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
+
+      // Saved GPS activities (Walk/Cycling). Same ownership rule as habits.
+      match /activities/{activityId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
     }
     // Deny everything else, including the legacy shared top-level collection.
     match /{document=**} {
