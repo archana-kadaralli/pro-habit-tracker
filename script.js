@@ -1365,6 +1365,8 @@ function requestLocation() {
    - live stats: distance (geodesic), active time, average + current speed,
      GPS accuracy
    - noisy fixes are rejected, never counted (see acceptFix)
+   - distance is gated by GPS uncertainty and movement evidence, so standing
+     still cannot accumulate fake distance (see actCommitGate / onActFix)
    - paused time and the gap it leaves are excluded from distance, and each
      resume starts a NEW polyline segment so the route never draws a straight
      line across a gap
@@ -1380,6 +1382,11 @@ function requestLocation() {
 
 const ACT_MAX_ACC_M = 65;   // fixes with worse accuracy are rejected outright
 const ACT_MIN_STEP_M = 1.2; // below this a fix is duplicate/noise jitter
+const ACT_MIN_COMMIT_M = 3; // smallest displacement that may add distance
+const ACT_MAX_COMMIT_M = 12; // accuracy-scaled distance gate is capped here
+const ACT_MOVE_SPEED = { walk: 0.7, cycle: 1.5 }; // device speed that proves movement (m/s)
+const ACT_STOP_SPEED = 0.3; // device speed that proves standing still (m/s)
+const ACT_DRIFT_SPEED = { walk: 0.6, cycle: 1.0 }; // fallback implied-speed floor (m/s)
 const ACT_MAX_SPEED = { walk: 4.5, cycle: 25 }; // m/s implied-speed caps
 const ACT_LABEL = { walk: "Walk", cycle: "Cycling" };
 const ACT_FOLLOW_ZOOM = 16; // map zoom used once a first fix has been seen
@@ -1429,7 +1436,7 @@ function newAct(type) {
     type, status: "active",
     startedAtMs: now, activeMs: 0, lastT0: now,
     distanceM: 0, maxSpeedMps: 0, curSpeedMps: null, lastAcc: null,
-    accepted: 0, rejected: 0, sawFix: false,
+    accepted: 0, rejected: 0, sawFix: false, anchor: null,
     segments: [{ t0: now, pts: [] }],
   };
 }
@@ -1448,6 +1455,8 @@ function haversineM(a, b) {
 // - < ACT_MIN_STEP_M from previous  -> rejected ["duplicate"] (standing still)
 // - non-increasing timestamps       -> rejected ["time"]
 // - implied speed above the activity cap -> rejected ["jump"] (teleports)
+// Passing this gate only makes a fix *usable*: onActFix applies a second,
+// accuracy-scaled gate before distance is committed (see actCommitGate).
 function acceptFix(prev, fix, type) {
   if (!Number.isFinite(fix.lat) || !Number.isFinite(fix.lng)) return { ok: false, why: "invalid" };
   if (!Number.isFinite(fix.acc) || fix.acc > ACT_MAX_ACC_M) return { ok: false, why: "accuracy" };
@@ -1459,6 +1468,15 @@ function acceptFix(prev, fix, type) {
   const speed = d / dt;
   if (speed > ACT_MAX_SPEED[type]) return { ok: false, why: "jump" };
   return { ok: true, d, speed };
+}
+
+// A displacement smaller than the device's own uncertainty is indistinguishable
+// from noise, so distance is only committed once it clears an accuracy-scaled
+// gate (bounded 3..12 m). Without this, standing-still jitter random-walks into
+// kilometres of fake distance - the original bug.
+function actCommitGate(...accs) {
+  const acc = Math.max(0, ...accs.filter((a) => Number.isFinite(a)));
+  return Math.min(ACT_MAX_COMMIT_M, Math.max(ACT_MIN_COMMIT_M, acc));
 }
 
 function startActWatch() {
@@ -1535,31 +1553,62 @@ async function startTracking(typeArg) {
 function onActFix(pos) {
   if (!act || act.status !== "active") return; // paused/saving: never accumulate
   const c = pos.coords;
-  const fix = { lat: c.latitude, lng: c.longitude, acc: c.accuracy, t: pos.timestamp || Date.now() };
+  const fix = {
+    lat: c.latitude, lng: c.longitude, acc: c.accuracy,
+    // Doppler speed (when the device provides one) is trustworthy evidence of
+    // movement/standing and is used ahead of differentiating noisy positions.
+    spd: Number.isFinite(c.speed) && c.speed >= 0 ? c.speed : null,
+    t: pos.timestamp || Date.now(),
+  };
   act.sawFix = true;
   if (actNoFixTimer) { clearTimeout(actNoFixTimer); actNoFixTimer = null; }
   // The map follows every valid raw fix (even ones later rejected for
   // accuracy) so the user always sees where the device actually is.
   updateActMe(fix);
   const seg = actSeg();
-  const prev = seg.pts.length ? seg.pts[seg.pts.length - 1] : null;
-  const verdict = acceptFix(prev, fix, act.type);
+  const anchor = act.anchor || null;
+  const verdict = acceptFix(anchor, fix, act.type);
   act.lastAcc = fix.acc;
   if (!verdict.ok) {
     act.rejected++;
-    if (verdict.why === "duplicate") act.curSpeedMps = 0; // standing still: no stale speed
+    if (verdict.why === "duplicate") act.curSpeedMps = fix.spd != null ? fix.spd : 0;
     if (verdict.why === "accuracy") actStatus(`Weak GPS signal (\u00b1${Math.round(fix.acc)} m) \u2014 point skipped.`, "muted");
     persistActSession();
     renderActivity();
     return;
   }
   if (actWeakTimer) { clearTimeout(actWeakTimer); actWeakTimer = null; }
+  const spd = fix.spd;
+  const spdMoving = spd != null && spd >= ACT_MOVE_SPEED[act.type];
+  const spdStill = spd != null && spd < ACT_STOP_SPEED;
   if (verdict.d) {
+    // Distance is committed only when the displacement (a) clears GPS
+    // uncertainty and (b) is backed by a moving speed. Otherwise it is drift:
+    // re-anchor without adding distance so jitter can never accumulate.
+    const gate = spdMoving ? ACT_MIN_COMMIT_M : actCommitGate(anchor && anchor.acc, fix.acc);
+    const impliedMoving = verdict.speed >= ACT_DRIFT_SPEED[act.type];
+    if (verdict.d < gate) {
+      act.rejected++; // sub-noise displacement: keep accumulating from anchor
+      act.curSpeedMps = spd != null ? spd : verdict.speed;
+      persistActSession();
+      renderActivity();
+      return;
+    }
+    if (spdStill || (!spdMoving && !impliedMoving)) {
+      act.rejected++; // drift, not movement: reset the anchor, add nothing
+      act.anchor = fix;
+      act.curSpeedMps = spd != null ? spd : 0;
+      persistActSession();
+      renderActivity();
+      return;
+    }
     act.distanceM += verdict.d;
-    act.curSpeedMps = verdict.speed;
-    if (verdict.speed > act.maxSpeedMps) act.maxSpeedMps = verdict.speed;
+    act.curSpeedMps = spd != null ? spd : verdict.speed;
+    if (act.curSpeedMps > act.maxSpeedMps) act.maxSpeedMps = act.curSpeedMps;
+    act.anchor = fix;
   } else {
-    act.curSpeedMps = 0;
+    act.curSpeedMps = spd != null ? spd : 0;
+    act.anchor = fix;
   }
   seg.pts.push(fix);
   act.accepted++;
@@ -1662,6 +1711,7 @@ function resumeTracking() {
   if (!act || act.status !== "paused") return;
   act.status = "active";
   act.lastT0 = Date.now();
+  act.anchor = null; // a paused gap is never bridged or counted
   act.segments.push({ t0: Date.now(), pts: [] }); // gap stays a gap: new segment
   persistActSession();
   startActWatch();
