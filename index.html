@@ -9,11 +9,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..700&family=Inter:wght@400;500;600;700;750&display=swap" rel="stylesheet">
-  <!-- Leaflet (BSD-2-Clause) for the activity tracker map. Tiles come from
-       OpenStreetMap and require the visible attribution rendered by Leaflet. -->
+  <!-- Leaflet (BSD-2-Clause) renders the activity tracker map; OpenFreeMap
+       vector tiles are drawn inside it by MapLibre GL Leaflet. No API key or
+       account is needed, but the OpenFreeMap/OpenMapTiles/OSM attribution is
+       mandatory and stays visible. -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
   <link rel="preconnect" href="https://unpkg.com" crossorigin>
-  <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin>
+  <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231d6b52'/><path d='M9 20V14M16 20V9M23 20V16' stroke='white' stroke-width='3' stroke-linecap='round'/></svg>">
 </head>
 <body>
@@ -445,7 +448,7 @@
               <button id="actRecenter" class="btn sm act-recenter" type="button" hidden><svg class="ic ic-sm" aria-hidden="true"><use href="#i-pin"/></svg> Center on me</button>
             </div>
             <p id="actMapNote" class="muted small" hidden style="margin-top:8px"></p>
-            <p class="muted small" style="margin-top:8px">Map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors. A web app can only record while this page is open and the screen on &mdash; there is no background tracking. If the page closes mid-activity, reopen it to restore the session from this device.</p>
+            <p class="muted small" style="margin-top:8px">Map style <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>, data &copy; <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> and <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors. A web app can only record while this page is open and the screen on &mdash; there is no background tracking. If the page closes mid-activity, reopen it to restore the session from this device.</p>
           </div>
           <div class="card" style="margin-top:16px">
             <h3>Activity history</h3>
@@ -664,6 +667,8 @@
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" defer></script>
+  <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.20/leaflet-maplibre-gl.js" defer></script>
 <script type="module" src="script.js"></script>
 </body>
 </html>

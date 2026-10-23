@@ -1834,23 +1834,39 @@ function discardActSession() {
 }
 
 /* ----- map (progressive enhancement; tracking works without it) ----- */
+// OpenFreeMap public vector tiles: free, no key/account/billing. "Liberty" is a
+// detailed street style (roads, paths, land use) that stays legible while
+// cycling. Attribution is required by the tile/style licences.
+const ACT_MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
+const ACT_MAP_ATTR = '&copy; <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> &middot; <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> &middot; data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors';
+function showActMapNote() {
+  const n = $("actMapNote");
+  if (!n) return;
+  n.hidden = false;
+  n.textContent = "The map library couldn\u2019t load its tiles (OpenFreeMap needs a network connection and WebGL). Tracking, distance and history still work.";
+}
 function initActMap() {
   const el = $("actMap");
   if (!el) return;
   if (typeof window === "undefined" || !window.L || typeof window.L.map !== "function") {
-    const n = $("actMapNote");
-    if (n) {
-      n.hidden = false;
-      n.textContent = "The map library couldn\u2019t load (it needs a network connection the first time). Tracking, distance and history still work.";
-    }
+    showActMapNote();
     return;
   }
   if (actMap) return;
   actMap = window.L.map(el, { zoomControl: true, attributionControl: true });
-  window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-  }).addTo(actMap);
+  if (typeof window.L.maplibreGL === "function" && window.maplibregl) {
+    try {
+      // The plugin disables MapLibre's own attribution control, so the required
+      // credits are attached to Leaflet's control explicitly.
+      window.L.maplibreGL({ style: ACT_MAP_STYLE }).addTo(actMap);
+      actMap.attributionControl.addAttribution(ACT_MAP_ATTR);
+    } catch (err) {
+      console.error(err);
+      showActMapNote();
+    }
+  } else {
+    showActMapNote();
+  }
   actRouteLayer = window.L.layerGroup().addTo(actMap);
   actMap.setView([20, 0], 2);
   // Any deliberate map gesture stops follow mode; the "Center on me" button
